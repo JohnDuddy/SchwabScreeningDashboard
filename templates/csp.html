@@ -1,0 +1,243 @@
+{% extends "base.html" %}
+{% block title %}Cash-Secured Puts – Schwab Dashboard{% endblock %}
+
+{% block extra_style %}
+.summary-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 1rem; margin-bottom: 1.4rem;
+}
+.summary-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.2rem; }
+.summary-card .label { font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.summary-card .value { font-size: 1.5rem; font-weight: 700; color: var(--schwab-blue); margin-top: .2rem; }
+.summary-card.accent .value { color: var(--accent); }
+
+.progress-wrap { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.4rem; margin-bottom: 1rem; }
+.progress-bar { height: 8px; background: #e8edf3; border-radius: 4px; overflow: hidden; margin: .6rem 0; }
+.progress-fill { height: 100%; background: var(--accent); transition: width .3s; }
+
+.controls { display: flex; flex-wrap: wrap; gap: .7rem; align-items: center; margin-bottom: 1.2rem; }
+.controls label { font-size: .85rem; color: var(--muted); }
+select, input[type=text] { padding: .38rem .65rem; border: 1px solid var(--border); border-radius: 5px; font-size: .87rem; background: var(--card); color: var(--text); }
+
+.table-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid var(--border); }
+table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+thead { background: var(--schwab-blue); color: #fff; position: sticky; top: 0; }
+thead th { padding: .6rem .7rem; text-align: left; white-space: nowrap; cursor: pointer; user-select: none; }
+thead th:hover { background: var(--schwab-light); }
+tbody tr { border-bottom: 1px solid var(--border); transition: background .1s; }
+tbody tr:hover { background: #f0f4fa; }
+tbody tr:nth-child(even) { background: #fafbfc; }
+td { padding: .5rem .7rem; white-space: nowrap; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.ticker { font-weight: 700; color: var(--schwab-blue); }
+.positive { color: var(--accent); }
+.negative { color: var(--danger); }
+
+.action-strong { background: #E6F4EA; color: #1A6B35; padding: .15rem .5rem; border-radius: 10px; font-size: .75rem; font-weight: 700; }
+.action-accept { background: #E8F0FE; color: #0057A8; padding: .15rem .5rem; border-radius: 10px; font-size: .75rem; font-weight: 700; }
+.action-watch  { background: #FFF3E0; color: #E07B00; padding: .15rem .5rem; border-radius: 10px; font-size: .75rem; font-weight: 700; }
+.action-reject { background: #FDF1F0; color: #C0392B; padding: .15rem .5rem; border-radius: 10px; font-size: .75rem; font-weight: 700; }
+
+.explanation { font-size: .73rem; color: var(--muted); max-width: 350px; white-space: normal; line-height: 1.35; }
+{% endblock %}
+
+{% block content %}
+
+<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1.5rem;">
+  <h2 style="font-size:1.4rem;color:var(--schwab-blue);">💰 Possible Cash-Secured PUTs</h2>
+  <div>
+    {% if rows %}<a href="/csp/export/csv" class="btn btn-success">⬇ CSV</a>{% endif %}
+    <button id="startBtn" class="btn btn-primary" onclick="startScan()">▶ Run Scan</button>
+  </div>
+</div>
+
+{% if error %}
+<div style="background:#fdf1f0;border:1px solid #f5c0bb;border-radius:8px;padding:1rem 1.4rem;color:var(--danger);margin-bottom:1rem;">
+  <strong>Error:</strong> {{ error }}
+</div>
+{% endif %}
+
+<div id="progressBox" class="progress-wrap" style="{{ 'display:none;' if not running else '' }}">
+  <div style="display:flex;justify-content:space-between;align-items:center;">
+    <strong>Scanning S&amp;P 500 + Nasdaq 100 for CSP candidates…</strong>
+    <span id="progressPct" style="font-size:.85rem;color:var(--muted);">0%</span>
+  </div>
+  <div class="progress-bar"><div id="progressFill" class="progress-fill" style="width:0%"></div></div>
+  <div style="display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted);">
+    <span id="progressCurrent">Starting…</span>
+    <span id="progressCount">0 / 0</span>
+  </div>
+</div>
+
+{% if summary %}
+<div class="summary-grid">
+  <div class="summary-card">
+    <div class="label">Scanned</div>
+    <div class="value">{{ summary.total_scanned }}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Qualified</div>
+    <div class="value">{{ summary.qualified }}</div>
+  </div>
+  <div class="summary-card accent">
+    <div class="label">Strong</div>
+    <div class="value">{{ summary.strong }}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Accept</div>
+    <div class="value">{{ summary.accept }}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Watch</div>
+    <div class="value">{{ summary.watch }}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Completed</div>
+    <div class="value" style="font-size:.85rem;padding-top:.3rem;">{{ summary.completed }}</div>
+  </div>
+</div>
+{% endif %}
+
+{% if rows or running %}
+<div class="controls">
+  <label>Filter:</label>
+  <select onchange="applyFilter('action', this.value)">
+    <option value="all"    {% if filter_action=='all'    %}selected{% endif %}>All qualified</option>
+    <option value="strong" {% if filter_action=='strong' %}selected{% endif %}>Strong only</option>
+    <option value="accept" {% if filter_action=='accept' %}selected{% endif %}>Strong + Accept</option>
+    <option value="watch"  {% if filter_action=='watch'  %}selected{% endif %}>Strong + Accept + Watch</option>
+  </select>
+
+  <label style="margin-left:.5rem;">Show top:</label>
+  <select onchange="applyFilter('top', this.value)">
+    <option value="15" {% if top_n==15 %}selected{% endif %}>15</option>
+    <option value="25" {% if top_n==25 %}selected{% endif %}>25</option>
+    <option value="50" {% if top_n==50 %}selected{% endif %}>50</option>
+    <option value="100" {% if top_n==100 %}selected{% endif %}>100</option>
+    <option value="999" {% if top_n>=999 %}selected{% endif %}>All</option>
+  </select>
+
+  <label style="margin-left:.5rem;">Search:</label>
+  <input type="text" id="searchBox" placeholder="ticker…" oninput="filterTable()" style="width:130px;">
+</div>
+{% endif %}
+
+{% if rows %}
+<div class="table-wrap">
+  <table id="cspTable">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Ticker</th>
+        <th>Company</th>
+        <th>Sector</th>
+        <th class="num">Price</th>
+        <th>Expiration</th>
+        <th class="num">DTE</th>
+        <th class="num">Strike</th>
+        <th class="num">Discount</th>
+        <th class="num">Bid</th>
+        <th class="num">Ask</th>
+        <th class="num">Mid</th>
+        <th class="num">Premium</th>
+        <th class="num">Cash Req.</th>
+        <th class="num">RoC%</th>
+        <th class="num">Ann%</th>
+        <th class="num">Delta</th>
+        <th class="num">P(OTM)</th>
+        <th class="num">OI</th>
+        <th class="num">Score</th>
+        <th>Action</th>
+        <th>Explanation</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.rank }}</td>
+        <td class="ticker">{{ r.ticker }}</td>
+        <td style="max-width:150px;white-space:normal;font-size:.78rem;">{{ r.company_name }}</td>
+        <td style="font-size:.78rem;">{{ r.sector }}</td>
+        <td class="num">${{ "%.2f"|format(r.price) }}</td>
+        <td>{{ r.expiration }}</td>
+        <td class="num">{{ r.dte }}</td>
+        <td class="num">${{ "%.2f"|format(r.strike) }}</td>
+        <td class="num positive">{{ "%.1f"|format(r.discount_pct) }}%</td>
+        <td class="num">${{ "%.2f"|format(r.bid) }}</td>
+        <td class="num">${{ "%.2f"|format(r.ask) }}</td>
+        <td class="num">${{ "%.2f"|format(r.mid) }}</td>
+        <td class="num">${{ "%.0f"|format(r.premium_income) }}</td>
+        <td class="num">${{ "{:,.0f}".format(r.cash_required) }}</td>
+        <td class="num positive">{{ "%.2f"|format(r.return_on_cash_pct) }}%</td>
+        <td class="num positive">{{ "%.1f"|format(r.annualized_return_pct) }}%</td>
+        <td class="num">{{ "%.2f"|format(r.delta or 0) }}</td>
+        <td class="num">{{ "%.0f"|format(r.prob_otm or 0) }}%</td>
+        <td class="num">{{ r.open_interest }}</td>
+        <td class="num" style="font-weight:700;">{{ "%.1f"|format(r.composite_score) }}</td>
+        <td>
+          {% if r.action == 'Strong' %}<span class="action-strong">{{ r.action }}</span>
+          {% elif r.action == 'Accept' %}<span class="action-accept">{{ r.action }}</span>
+          {% elif r.action == 'Watch' %}<span class="action-watch">{{ r.action }}</span>
+          {% else %}<span class="action-reject">{{ r.action }}</span>{% endif %}
+        </td>
+        <td class="explanation">{{ r.explanation }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-top:1rem;font-size:.8rem;color:var(--muted);flex-wrap:wrap;gap:.5rem;">
+  <span>{{ rows|length }} candidates shown</span>
+  <span>All options are OTM puts with delta {{ "%.2f"|format(-0.35) }} to {{ "%.2f"|format(-0.15) }}, DTE 21–60 days</span>
+  <span>This is analysis only — no trades placed</span>
+</div>
+
+{% elif not running and not error %}
+<div style="text-align:center;padding:3rem 1rem;color:var(--muted);">
+  <p style="font-size:1.05rem;margin-bottom:.5rem;">No CSP scan results yet.</p>
+  <p style="font-size:.85rem;">Click <strong>▶ Run Scan</strong> to screen S&amp;P 500 + Nasdaq 100 for cash-secured put opportunities.<br>
+  This takes 15–30 minutes (fetches fundamentals + option chains for ~490 stocks).</p>
+</div>
+{% endif %}
+
+<script>
+let statusInterval = null;
+function startScan() {
+  fetch("/csp/start", { method: "POST" }).then(r => r.json()).then(d => {
+    if (d.status === "started" || d.status === "already_running") {
+      document.getElementById("progressBox").style.display = "block";
+      document.getElementById("startBtn").disabled = true;
+      document.getElementById("startBtn").textContent = "Scanning…";
+      pollStatus();
+    }
+  });
+}
+function pollStatus() {
+  if (statusInterval) clearInterval(statusInterval);
+  statusInterval = setInterval(() => {
+    fetch("/csp/status").then(r => r.json()).then(d => {
+      const pct = d.total > 0 ? Math.round(d.progress / d.total * 100) : 0;
+      document.getElementById("progressFill").style.width = pct + "%";
+      document.getElementById("progressPct").textContent = pct + "%";
+      document.getElementById("progressCurrent").textContent = d.current ? `Screening ${d.current}` : "Starting…";
+      document.getElementById("progressCount").textContent = `${d.progress} / ${d.total}`;
+      if (!d.running) { clearInterval(statusInterval); location.reload(); }
+    });
+  }, 2000);
+}
+{% if running %}pollStatus();{% endif %}
+
+function filterTable() {
+  const q = document.getElementById("searchBox").value.toLowerCase();
+  document.querySelectorAll("#cspTable tbody tr").forEach(row => {
+    row.style.display = row.textContent.toLowerCase().includes(q) ? "" : "none";
+  });
+}
+function applyFilter(key, val) {
+  const url = new URL(window.location.href);
+  url.searchParams.set(key, val);
+  window.location.href = url.toString();
+}
+</script>
+{% endblock %}

@@ -1,0 +1,276 @@
+{% extends "base.html" %}
+{% block title %}Dashboard – Schwab Covered Calls{% endblock %}
+
+{% block extra_style %}
+/* ── Summary cards ───────────────────────────────── */
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.4rem;
+}
+.summary-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.2rem;
+}
+.summary-card .label { font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.summary-card .value { font-size: 1.65rem; font-weight: 700; color: var(--schwab-blue); margin-top: .2rem; }
+.summary-card.accent .value { color: var(--accent); }
+.summary-card.warn   .value { color: var(--warn);   }
+
+/* ── Controls bar ────────────────────────────────── */
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .7rem;
+  align-items: center;
+  margin-bottom: 1.2rem;
+}
+.controls label { font-size: .85rem; color: var(--muted); }
+select, input[type=text] {
+  padding: .38rem .65rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: .87rem;
+  background: var(--card);
+  color: var(--text);
+}
+
+/* ── Table ───────────────────────────────────────── */
+.table-wrap {
+  overflow-x: auto;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .85rem;
+}
+thead {
+  background: var(--schwab-blue);
+  color: #fff;
+  position: sticky;
+  top: 0;
+}
+thead th {
+  padding: .7rem .9rem;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+thead th:hover { background: var(--schwab-light); }
+thead th.sort-asc::after  { content: " ▲"; font-size:.7em; }
+thead th.sort-desc::after { content: " ▼"; font-size:.7em; }
+tbody tr { border-bottom: 1px solid var(--border); transition: background .1s; }
+tbody tr:last-child { border-bottom: none; }
+tbody tr:hover { background: #f0f4fa; }
+tbody tr.highlight { background: var(--highlight-row); }
+tbody tr.highlight:hover { background: #ffefc0; }
+td { padding: .6rem .9rem; white-space: nowrap; }
+td.ticker { font-weight: 700; color: var(--schwab-blue); }
+td.num { text-align: right; }
+td.sell-positive { text-align: right; font-weight: 700; color: var(--accent); }
+td.notes { font-size: .78rem; color: var(--warn); max-width: 180px; white-space: normal; }
+tbody tr:nth-child(even):not(.highlight) { background: #fafbfc; }
+
+/* ── Error list ──────────────────────────────────── */
+.error-box {
+  background: #fdf1f0;
+  border: 1px solid #f5c0bb;
+  border-radius: 8px;
+  padding: 1rem 1.4rem;
+  margin-bottom: 1.2rem;
+  font-size: .85rem;
+  color: var(--danger);
+}
+.error-box h4 { margin-bottom: .4rem; }
+
+/* ── Footer strip ────────────────────────────────── */
+.footer-strip {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .6rem;
+  margin-top: 1rem;
+  font-size: .8rem;
+  color: var(--muted);
+}
+{% endblock %}
+
+{% block content %}
+
+{# ── Summary cards ─────────────────────────────────────────────── #}
+<div class="summary-grid">
+  <div class="summary-card">
+    <div class="label">Accounts Scanned</div>
+    <div class="value">{{ summary.accounts }}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Stock Positions</div>
+    <div class="value">{{ summary.total_positions }}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">≥ 100 Shares</div>
+    <div class="value">{{ summary.gte100 }}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Existing Covered Calls</div>
+    <div class="value">{{ summary.total_cc }}</div>
+  </div>
+  <div class="summary-card accent">
+    <div class="label">Calls To Be Sold</div>
+    <div class="value">{{ summary.total_to_sell }}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Data Retrieved</div>
+    <div class="value" style="font-size:.9rem;padding-top:.3rem;">{{ summary.timestamp }}</div>
+  </div>
+</div>
+
+{# ── Errors ────────────────────────────────────────────────────── #}
+{% if errors %}
+<div class="error-box">
+  <h4>⚠ Account Errors ({{ errors|length }})</h4>
+  {% for e in errors %}<div>{{ e }}</div>{% endfor %}
+</div>
+{% endif %}
+
+{# ── Controls ──────────────────────────────────────────────────── #}
+<div class="controls">
+  {# Filter mode #}
+  <label>Filter:</label>
+  <select id="filterSelect" onchange="applyFilter(this.value)">
+    <option value="gte100" {% if filter_mode=='gte100' %}selected{% endif %}>≥ 100 shares</option>
+    <option value="sell"   {% if filter_mode=='sell'   %}selected{% endif %}>Calls available only</option>
+    <option value="all"    {% if filter_mode=='all'    %}selected{% endif %}>All positions</option>
+  </select>
+
+  {# Account number toggle #}
+  <label style="margin-left:.5rem;">Account numbers:</label>
+  <select id="acctToggle" onchange="toggleAccounts(this.value)">
+    <option value="masked"  {% if not show_full %}selected{% endif %}>Masked</option>
+    <option value="full"    {% if show_full     %}selected{% endif %}>Full (sensitive)</option>
+  </select>
+
+  {# Quick search #}
+  <label style="margin-left:.5rem;">Search:</label>
+  <input type="text" id="searchBox" placeholder="ticker / account…" oninput="filterTable()" style="width:160px;">
+
+  {# Export #}
+  <div style="margin-left:auto;display:flex;gap:.5rem;">
+    <a href="/export/csv" class="btn btn-success">⬇ CSV</a>
+    <a href="/dashboard"  class="btn btn-secondary">🔄 Refresh</a>
+  </div>
+</div>
+
+{# ── Table ─────────────────────────────────────────────────────── #}
+<div class="table-wrap">
+  <table id="mainTable">
+    <thead>
+      <tr>
+        <th onclick="sortTable(0)">Account Name</th>
+        <th onclick="sortTable(1)">Account #</th>
+        <th onclick="sortTable(2)">Ticker</th>
+        <th onclick="sortTable(3)">Company</th>
+        <th onclick="sortTable(4)" class="num">Purchase Price</th>
+        <th onclick="sortTable(5)" class="num">Shares Owned</th>
+        <th onclick="sortTable(6)" class="num">|Shares|</th>
+        <th onclick="sortTable(7)" class="num">Cap (Exact)</th>
+        <th onclick="sortTable(8)" class="num">Cap (Whole)</th>
+        <th onclick="sortTable(9)" class="num">Calls Present</th>
+        <th onclick="sortTable(10)" class="num">To Be Sold</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr class="{{ 'highlight' if r.to_be_sold > 0 else '' }}" data-ticker="{{ r.ticker }}" data-acct="{{ r.account_name }}">
+        <td>{{ r.account_name }}</td>
+        <td>{{ r.account_number }}</td>
+        <td class="ticker">{{ r.ticker }}</td>
+        <td>{{ r.company_name }}</td>
+        <td class="num">{{ "$%.2f" | format(r.purchase_price) if r.purchase_price is not none else "n/a" }}</td>
+        <td class="num">{{ r.shares_owned | int }}</td>
+        <td class="num">{{ r.abs_shares | int }}</td>
+        <td class="num">{{ "%.2f" | format(r.cap_exact) }}</td>
+        <td class="num">{{ r.cap_whole }}</td>
+        <td class="num">{{ r.cc_present }}</td>
+        <td class="{{ 'sell-positive' if r.to_be_sold > 0 else 'num' }}">{{ r.to_be_sold }}</td>
+        <td class="notes">{{ r.notes }}</td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="12" style="text-align:center;padding:2.5rem;color:var(--muted);">
+          No positions match the current filter.
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="footer-strip">
+  <span>{{ rows|length }} rows displayed</span>
+  <span>Highlighted rows = covered calls available to sell</span>
+  <span>No trades placed by this application</span>
+</div>
+
+<script>
+/* ── Sorting ─────────────────────────────────────────────────── */
+let sortCol = -1, sortDir = 1;
+
+function sortTable(col) {
+  const table = document.getElementById("mainTable");
+  const headers = table.querySelectorAll("thead th");
+  const tbody = table.tBodies[0];
+  const rows = Array.from(tbody.rows);
+
+  if (sortCol === col) sortDir = -sortDir;
+  else { sortCol = col; sortDir = 1; }
+
+  headers.forEach((h, i) => {
+    h.classList.remove("sort-asc", "sort-desc");
+    if (i === col) h.classList.add(sortDir === 1 ? "sort-asc" : "sort-desc");
+  });
+
+  rows.sort((a, b) => {
+    const av = a.cells[col].textContent.trim();
+    const bv = b.cells[col].textContent.trim();
+    const an = parseFloat(av.replace(/,/g, ""));
+    const bn = parseFloat(bv.replace(/,/g, ""));
+    if (!isNaN(an) && !isNaN(bn)) return (an - bn) * sortDir;
+    return av.localeCompare(bv) * sortDir;
+  });
+
+  rows.forEach(r => tbody.appendChild(r));
+}
+
+/* ── Quick search ────────────────────────────────────────────── */
+function filterTable() {
+  const q = document.getElementById("searchBox").value.toLowerCase();
+  document.querySelectorAll("#mainTable tbody tr").forEach(row => {
+    const text = row.textContent.toLowerCase();
+    row.style.display = text.includes(q) ? "" : "none";
+  });
+}
+
+/* ── Filter redirect ─────────────────────────────────────────── */
+function applyFilter(val) {
+  const url = new URL(window.location.href);
+  url.searchParams.set("filter", val);
+  window.location.href = url.toString();
+}
+
+/* ── Account toggle ──────────────────────────────────────────── */
+function toggleAccounts(val) {
+  const url = new URL(window.location.href);
+  url.searchParams.set("show_full", val === "full" ? "true" : "false");
+  window.location.href = url.toString();
+}
+</script>
+{% endblock %}

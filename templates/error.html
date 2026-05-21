@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Error – Schwab Covered Calls{% endblock %}
+{% block content %}
+<div class="card" style="max-width:600px;margin:3rem auto;text-align:center;">
+  <p style="font-size:2.5rem;">⚠️</p>
+  <h2 style="color:var(--danger);margin:.6rem 0;">Something went wrong</h2>
+  <p style="color:var(--muted);margin:.8rem 0 1.6rem;line-height:1.6;">{{ message }}</p>
+  <a href="/" class="btn btn-primary">← Back to Home</a>
+  <a href="/login" class="btn btn-secondary" style="margin-left:.5rem">Re-authenticate</a>
+</div>
+{% endblock %}

@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>{% block title %}Schwab Covered Calls{% endblock %}</title>
+  <style>
+    :root {
+      --schwab-blue:   #00274d;
+      --schwab-light:  #0057a8;
+      --accent:        #00a651;
+      --warn:          #e07b00;
+      --danger:        #c0392b;
+      --bg:            #f4f6f9;
+      --card:          #ffffff;
+      --border:        #dde3ea;
+      --text:          #1a2330;
+      --muted:         #6b7a8d;
+      --highlight-row: #fff8e1;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      background: var(--schwab-blue);
+      color: #fff;
+      padding: 0.85rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 2px 8px rgba(0,0,0,.25);
+    }
+    header h1 { font-size: 1.2rem; font-weight: 600; letter-spacing: .02em; }
+    header nav a {
+      color: rgba(255,255,255,.82);
+      text-decoration: none;
+      margin-left: 1.4rem;
+      font-size: .88rem;
+      transition: color .15s;
+    }
+    header nav a:hover { color: #fff; }
+    main { max-width: 1400px; margin: 0 auto; padding: 1.8rem 1.5rem 3rem; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.4rem 1.6rem;
+      margin-bottom: 1.4rem;
+    }
+    .btn {
+      display: inline-block;
+      padding: .45rem 1.1rem;
+      border-radius: 5px;
+      border: none;
+      font-size: .87rem;
+      font-weight: 500;
+      cursor: pointer;
+      text-decoration: none;
+      transition: opacity .15s, background .15s;
+    }
+    .btn-primary   { background: var(--schwab-light); color: #fff; }
+    .btn-secondary { background: #e8edf3; color: var(--text); }
+    .btn-success   { background: var(--accent);       color: #fff; }
+    .btn-danger    { background: var(--danger);        color: #fff; }
+    .btn:hover     { opacity: .88; }
+    {% block extra_style %}{% endblock %}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>📈 Schwab Covered Call Dashboard</h1>
+    <nav>
+      <a href="/">Home</a>
+      <a href="/dashboard">Covered Calls</a>
+      <a href="/options">Options</a>
+      <a href="/csp">CSP Screener</a>
+      <a href="/momentum">Momentum</a>
+      <a href="/universe">Universe</a>
+      <a href="/logout">Logout</a>
+    </nav>
+  </header>
+  <main>{% block content %}{% endblock %}</main>
+</body>
+</html>
