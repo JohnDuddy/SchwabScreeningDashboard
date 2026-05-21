@@ -54,15 +54,26 @@ REJECT_ON_EARNINGS_IN_PERIOD = True
 # Section G — Composite score weights (sum to 1.0; event risk is subtracted)
 # ---------------------------------------------------------------------------
 WEIGHTS = {
-    "underlying_quality":  0.25,
-    "valuation":           0.15,
-    "balance_sheet":       0.15,
-    "earnings_quality":    0.10,
-    "technical_trend":     0.15,
-    "option_liquidity":    0.10,
-    "premium_attract":     0.10,
+    "underlying_quality":  0.18,
+    "valuation":           0.12,
+    "balance_sheet":       0.10,
+    "earnings_quality":    0.08,
+    "technical_trend":     0.10,
+    "option_liquidity":    0.07,
+    "premium_attract":     0.07,
+    "ev_score":            0.10,
+    "iv_rank":             0.07,
+    "iv_hv_premium":       0.06,
+    "beta_risk":           0.05,
 }
 EVENT_RISK_PENALTY_MAX = 25  # max points subtracted
+
+VIX_REGIMES = {
+    "low":      {"vix_max": 15,  "delta_min": -0.35, "delta_max": -0.20, "dte_min": 30, "dte_max": 60},
+    "normal":   {"vix_max": 25,  "delta_min": -0.35, "delta_max": -0.15, "dte_min": 21, "dte_max": 60},
+    "elevated": {"vix_max": 35,  "delta_min": -0.25, "delta_max": -0.15, "dte_min": 21, "dte_max": 45},
+    "crisis":   {"vix_max": 999, "delta_min": -0.20, "delta_max": -0.10, "dte_min": 14, "dte_max": 35},
+}
 
 # Action thresholds (Section G)
 SCORE_ACCEPT_MIN = 85

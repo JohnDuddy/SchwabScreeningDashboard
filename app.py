@@ -861,8 +861,24 @@ def _run_csp_background():
     try:
         import universe as univ
         from cspscreener.data import build_universe as csp_build_universe, YFinanceProvider
+        from cspscreener.data.yf_provider import fetch_vix_level
         from cspscreener.screener import screen_ticker
         from cspscreener import config as csp_config
+
+        # Fetch VIX level and determine regime
+        vix_level = fetch_vix_level()
+        vix_regime = "normal"
+        vix_params = None
+        if vix_level is not None:
+            for regime_name, params in csp_config.VIX_REGIMES.items():
+                if vix_level <= params["vix_max"]:
+                    vix_regime = regime_name
+                    vix_params = params
+                    break
+
+        with _csp_lock:
+            _csp_state["vix_level"] = vix_level
+            _csp_state["vix_regime"] = vix_regime
 
         # Use our universe
         tickers, _ = univ.load_universe()
@@ -878,7 +894,7 @@ def _run_csp_background():
                 _csp_state["progress"] = i
                 _csp_state["current"]  = ticker
 
-            tc, reason = screen_ticker(ticker, provider)
+            tc, reason = screen_ticker(ticker, provider, vix_params=vix_params)
             if tc is not None:
                 candidates.append(tc)
             elif reason:
@@ -935,6 +951,8 @@ def csp_page():
     display_rows = display_rows[:top_n]
 
     summary = {}
+    vix_level = _csp_state.get("vix_level")
+    vix_regime = _csp_state.get("vix_regime")
     if rows:
         summary = {
             "total_scanned": _csp_state.get("total", 0),
@@ -949,6 +967,7 @@ def csp_page():
         "csp.html",
         running=running, rows=display_rows, summary=summary, error=error,
         filter_action=filter_action, top_n=top_n,
+        vix_level=vix_level, vix_regime=vix_regime,
     )
 
 
@@ -992,6 +1011,91 @@ def csp_export_csv():
     return Response(
         csv_data, mimetype="text/csv",
         headers={"Content-Disposition": f"attachment; filename=csp_candidates_{ts}.csv"},
+    )
+
+
+# ── CSP Compare route ────────────────────────────────────────────────────
+
+@app.route("/csp/compare")
+def csp_compare():
+    """Side-by-side comparison of CSP candidates."""
+    tickers_param = request.args.get("tickers", "")
+    tickers = [t.strip().upper() for t in tickers_param.split(",") if t.strip()]
+
+    with _csp_lock:
+        all_rows = _csp_state.get("results") or []
+
+    matching = [r for r in all_rows if r.get("ticker", "").upper() in tickers]
+    # Preserve requested order
+    ticker_order = {t: i for i, t in enumerate(tickers)}
+    matching.sort(key=lambda r: ticker_order.get(r.get("ticker", "").upper(), 999))
+
+    return render_template("csp_compare.html", rows=matching)
+
+
+# ── Trade Journal routes ──────────────────────────────────────────────────
+
+@app.route("/journal")
+def journal_page():
+    """Display trade journal."""
+    import journal
+    trades = journal.get_all_trades()
+    stats = journal.get_stats()
+    return render_template("journal.html", trades=trades, stats=stats)
+
+
+@app.route("/journal/add", methods=["POST"])
+def journal_add():
+    """Add a new trade to the journal."""
+    import journal
+    journal.add_trade({
+        "ticker": request.form.get("ticker", ""),
+        "strike": request.form.get("strike", 0),
+        "expiration": request.form.get("expiration", ""),
+        "premium": request.form.get("premium", 0),
+        "contracts": request.form.get("contracts", 1),
+        "notes": request.form.get("notes", ""),
+    })
+    return redirect(url_for("journal_page"))
+
+
+@app.route("/journal/close/<trade_id>", methods=["POST"])
+def journal_close(trade_id):
+    """Close an open trade."""
+    import journal
+    journal.close_trade(trade_id, {
+        "close_premium": request.form.get("close_premium", 0),
+        "close_reason": request.form.get("close_reason", "expired"),
+    })
+    return redirect(url_for("journal_page"))
+
+
+# ── Portfolio Risk Dashboard ───────────────────────────────────────────────
+
+@app.route("/risk")
+def risk_page():
+    """Portfolio risk analysis for CSP candidates."""
+    from cspscreener.risk import analyze_portfolio_risk, kelly_allocation
+
+    capital = request.args.get("capital", "100000")
+    try:
+        total_capital = float(capital.replace(",", ""))
+    except (ValueError, TypeError):
+        total_capital = 100000.0
+
+    with _csp_lock:
+        rows = _csp_state.get("results") or []
+        vix_level = _csp_state.get("vix_level")
+        vix_regime = _csp_state.get("vix_regime")
+
+    risk = analyze_portfolio_risk(rows, total_capital)
+    kelly = kelly_allocation(rows, total_capital) if rows else []
+
+    return render_template(
+        "risk.html",
+        risk=risk, kelly=kelly,
+        capital=int(total_capital),
+        vix_level=vix_level, vix_regime=vix_regime,
     )
 
 

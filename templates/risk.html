@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block title %}Portfolio Risk – CSP Dashboard{% endblock %}
+
+{% block extra_style %}
+.summary-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1rem; margin-bottom: 1.4rem;
+}
+.summary-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.2rem; }
+.summary-card .label { font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.summary-card .value { font-size: 1.5rem; font-weight: 700; color: var(--schwab-blue); margin-top: .2rem; }
+.summary-card.accent .value { color: var(--accent); }
+.summary-card.warn .value { color: var(--warn); }
+.summary-card.danger .value { color: var(--danger); }
+
+.vix-badge {
+  display: inline-block; padding: .25rem .8rem; border-radius: 12px;
+  font-weight: 700; font-size: .85rem; text-transform: uppercase;
+}
+.vix-low { background: #E6F4EA; color: #1A6B35; }
+.vix-normal { background: #E8F0FE; color: #0057A8; }
+.vix-elevated { background: #FFF3E0; color: #E07B00; }
+.vix-crisis { background: #FDF1F0; color: #C0392B; }
+
+.sector-bar-wrap { margin: .3rem 0; display: flex; align-items: center; gap: .5rem; }
+.sector-name { min-width: 140px; font-size: .82rem; }
+.sector-bar { height: 18px; border-radius: 3px; background: var(--schwab-light); transition: width .3s; min-width: 2px; }
+.sector-bar.over { background: var(--danger); }
+.sector-pct { font-size: .78rem; color: var(--muted); min-width: 40px; }
+
+.table-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid var(--border); }
+table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+thead { background: var(--schwab-blue); color: #fff; }
+thead th { padding: .55rem .7rem; text-align: left; white-space: nowrap; }
+tbody tr { border-bottom: 1px solid var(--border); }
+tbody tr:hover { background: #f0f4fa; }
+tbody tr:nth-child(even) { background: #fafbfc; }
+td { padding: .45rem .7rem; white-space: nowrap; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.capital-form { display: flex; gap: .6rem; align-items: center; margin-bottom: 1.4rem; }
+.capital-form input { padding: .4rem .7rem; border: 1px solid var(--border); border-radius: 5px; font-size: .9rem; width: 150px; }
+
+.warning-box { background: #FFF3E0; border: 1px solid #FFD699; border-radius: 8px; padding: .8rem 1.2rem; margin-bottom: 1rem; font-size: .85rem; color: #8B5E00; }
+{% endblock %}
+
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1.5rem;">
+  <h2 style="font-size:1.4rem;color:var(--schwab-blue);">Portfolio Risk Dashboard</h2>
+</div>
+
+<form class="capital-form" method="get" action="/risk">
+  <label style="font-size:.88rem;font-weight:500;">Total Capital: $</label>
+  <input type="text" name="capital" value="{{ capital }}" placeholder="100000">
+  <button type="submit" class="btn btn-primary">Update</button>
+</form>
+
+{% if vix_level is not none %}
+<div class="card" style="display:flex;align-items:center;gap:1rem;margin-bottom:1.4rem;">
+  <strong>VIX:</strong> {{ "%.1f"|format(vix_level) }}
+  <span class="vix-badge vix-{{ vix_regime }}">{{ vix_regime }}</span>
+  <span style="font-size:.82rem;color:var(--muted);">
+    {% if vix_regime == 'low' %}Wide delta range, longer DTE preferred
+    {% elif vix_regime == 'normal' %}Standard parameters
+    {% elif vix_regime == 'elevated' %}Tighter delta, shorter DTE
+    {% elif vix_regime == 'crisis' %}Conservative: narrow delta, short DTE{% endif %}
+  </span>
+</div>
+{% endif %}
+
+{% if risk.empty %}
+<div style="text-align:center;padding:3rem 1rem;color:var(--muted);">
+  <p style="font-size:1.05rem;margin-bottom:.5rem;">No CSP scan results available.</p>
+  <p style="font-size:.85rem;">Run a <a href="/csp">CSP scan</a> first, then return here for risk analysis.</p>
+</div>
+{% else %}
+
+{% if risk.warnings %}
+<div class="warning-box">
+  <strong>Warnings:</strong>
+  <ul style="margin:.3rem 0 0 1.2rem;">
+    {% for w in risk.warnings %}<li>{{ w }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<div class="summary-grid">
+  <div class="summary-card">
+    <div class="label">Positions Affordable</div>
+    <div class="value">{{ risk.affordable }}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Capital Deployed</div>
+    <div class="value">${{ "{:,.0f}".format(risk.capital_deployed) }}</div>
+  </div>
+  <div class="summary-card accent">
+    <div class="label">Total Premium</div>
+    <div class="value">${{ "{:,.0f}".format(risk.total_premium) }}</div>
+  </div>
+  <div class="summary-card accent">
+    <div class="label">Portfolio Return</div>
+    <div class="value">{{ risk.portfolio_return_pct }}%</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Utilization</div>
+    <div class="value">{{ risk.utilization }}%</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Weighted Delta</div>
+    <div class="value">{{ risk.weighted_delta }}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Avg Beta</div>
+    <div class="value">{{ risk.avg_beta if risk.avg_beta is not none else 'N/A' }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="font-size:1rem;margin-bottom:.8rem;color:var(--schwab-blue);">Sector Concentration</h3>
+  {% for sector, pct in risk.sector_concentration.items() %}
+  <div class="sector-bar-wrap">
+    <span class="sector-name">{{ sector }}</span>
+    <div class="sector-bar{{ ' over' if pct > 20 else '' }}" style="width:{{ [pct * 3, 1]|max }}px;"></div>
+    <span class="sector-pct">{{ pct }}%</span>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="card">
+  <h3 style="font-size:1rem;margin-bottom:.8rem;color:var(--schwab-blue);">Stress Test (Aggregate Losses)</h3>
+  <div class="summary-grid" style="grid-template-columns:repeat(3, 1fr);">
+    <div class="summary-card warn">
+      <div class="label">Market -10%</div>
+      <div class="value">-${{ "{:,.0f}".format(risk.stress_loss_10) }}</div>
+    </div>
+    <div class="summary-card warn">
+      <div class="label">Market -20%</div>
+      <div class="value">-${{ "{:,.0f}".format(risk.stress_loss_20) }}</div>
+    </div>
+    <div class="summary-card danger">
+      <div class="label">Market -30%</div>
+      <div class="value">-${{ "{:,.0f}".format(risk.stress_loss_30) }}</div>
+    </div>
+  </div>
+</div>
+
+{% if kelly %}
+<div class="card">
+  <h3 style="font-size:1rem;margin-bottom:.8rem;color:var(--schwab-blue);">Kelly Allocation (Half-Kelly, 5% Cap)</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Ticker</th>
+          <th class="num">Score</th>
+          <th class="num">Kelly %</th>
+          <th class="num">Contracts</th>
+          <th class="num">Capital Req.</th>
+          <th class="num">Premium</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in kelly %}
+        <tr>
+          <td style="font-weight:700;color:var(--schwab-blue);">{{ a.ticker }}</td>
+          <td class="num">{{ "%.1f"|format(a.score) }}</td>
+          <td class="num">{{ a.kelly_fraction }}%</td>
+          <td class="num">{{ a.contracts }}</td>
+          <td class="num">${{ "{:,.0f}".format(a.capital_required) }}</td>
+          <td class="num" style="color:var(--accent);">${{ "{:,.0f}".format(a.premium_income) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% endif %}
+{% endblock %}

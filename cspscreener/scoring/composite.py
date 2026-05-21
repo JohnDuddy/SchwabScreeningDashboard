@@ -22,6 +22,10 @@ def composite_score(tc: TradeCandidate) -> float:
         + w["technical_trend"]    * s.score_technical
         + w["option_liquidity"]   * o.score_option_liquidity
         + w["premium_attract"]    * o.score_premium_attract
+        + w["ev_score"]           * o.score_ev
+        + w["iv_rank"]            * o.score_iv_rank
+        + w["iv_hv_premium"]      * o.score_iv_hv_premium
+        + w["beta_risk"]          * s.score_beta_risk
     )
 
     penalty = (s.score_event_risk / 100.0) * config.EVENT_RISK_PENALTY_MAX
@@ -74,6 +78,27 @@ def build_explanation(tc: TradeCandidate) -> str:
         bullets.append("liquid options chain")
     elif o.score_option_liquidity < 40:
         bullets.append("thin option liquidity")
+
+    # EV
+    if o.expected_value is not None:
+        if o.expected_value > 0:
+            bullets.append(f"positive EV (${o.expected_value:.0f})")
+        else:
+            bullets.append(f"negative EV (${o.expected_value:.0f})")
+
+    # IV rank
+    if o.iv_rank is not None:
+        if o.iv_rank >= 0.60:
+            bullets.append("elevated IV rank (good for selling)")
+        elif o.iv_rank < 0.20:
+            bullets.append("low IV rank (poor time to sell)")
+
+    # Beta
+    if s.beta is not None:
+        if s.beta <= 0.8:
+            bullets.append("defensive low-beta stock")
+        elif s.beta >= 1.5:
+            bullets.append("high-beta (volatile)")
 
     # Earnings warning
     if s.earnings_in_window:

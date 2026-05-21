@@ -38,6 +38,18 @@ def _spy_history() -> Optional[pd.DataFrame]:
     return _SPY_HISTORY if _SPY_HISTORY is not None and not _SPY_HISTORY.empty else None
 
 
+def fetch_vix_level() -> Optional[float]:
+    """Fetch current VIX level. Called once at scan start."""
+    try:
+        vix = yf.Ticker("^VIX")
+        h = vix.history(period="5d", auto_adjust=True)
+        if h is not None and not h.empty:
+            return float(h["Close"].iloc[-1])
+    except Exception:
+        pass
+    return None
+
+
 def _safe(d: dict, key: str, default=None):
     v = d.get(key, default)
     if v is None:
@@ -285,6 +297,24 @@ class YFinanceProvider(DataProvider):
             lo52 = float(year.min())
             if hi52 > 0: snap.pct_from_52w_high = (spot - hi52) / hi52
             if lo52 > 0: snap.pct_from_52w_low  = (spot - lo52) / lo52
+
+            # Beta
+            snap.beta = _safe(info, "beta")
+
+            # Historical volatility (30-day, annualized)
+            if len(close) >= 31:
+                log_ret = np.log(close / close.shift(1)).dropna().tail(30)
+                if len(log_ret) >= 20:
+                    snap.hv_30 = float(log_ret.std() * np.sqrt(252))
+
+            # 52-week rolling HV range (for IV rank computation)
+            if len(close) >= 252:
+                all_log_ret = np.log(close / close.shift(1)).dropna()
+                rolling_hv = all_log_ret.rolling(30).std() * np.sqrt(252)
+                rolling_hv = rolling_hv.dropna()
+                if len(rolling_hv) >= 100:
+                    snap.hv_52w_low = float(rolling_hv.min())
+                    snap.hv_52w_high = float(rolling_hv.max())
 
             # Earnings date
             try:

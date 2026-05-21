@@ -270,3 +270,25 @@ def event_risk_score(s: StockSnapshot) -> float:
         elif sp > 0.10: risk += 15
 
     return min(100.0, risk)
+
+
+def beta_risk_score(s: StockSnapshot) -> float:
+    """Lower beta = safer for CSPs. Returns 0-100."""
+    if s.beta is None:
+        return 50.0
+    b = s.beta
+    if b < 0:
+        return 60.0
+    if b <= 0.5:
+        return 100.0
+    if b <= 0.8:
+        return 90.0
+    if b <= 1.0:
+        return 75.0
+    if b <= 1.2:
+        return 60.0
+    if b <= 1.5:
+        return 40.0
+    if b <= 2.0:
+        return 25.0
+    return 10.0

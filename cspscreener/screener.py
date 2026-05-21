@@ -23,7 +23,9 @@ from .models import StockSnapshot, OptionCandidate, TradeCandidate
 from .scoring import (
     quality_score, valuation_score, balance_sheet_score,
     earnings_quality_score, technical_score, event_risk_score,
+    beta_risk_score,
     option_liquidity_score, premium_attractiveness_score,
+    ev_score, iv_rank_score, iv_hv_premium_score,
     composite_score, classify, build_explanation,
 )
 
@@ -69,7 +71,7 @@ def _check_ex_div_window(s: StockSnapshot, max_dte: int) -> None:
         pass
 
 
-def _option_passes_filters(o: OptionCandidate) -> tuple[bool, list[str]]:
+def _option_passes_filters(o: OptionCandidate, vix_params=None) -> tuple[bool, list[str]]:
     fails = []
     if o.open_interest < config.MIN_OPEN_INTEREST:
         fails.append(f"OI<{config.MIN_OPEN_INTEREST}")
@@ -77,10 +79,21 @@ def _option_passes_filters(o: OptionCandidate) -> tuple[bool, list[str]]:
         fails.append(f"vol<{config.MIN_OPTION_VOLUME}")
     if o.spread_pct > config.MAX_BIDASK_SPREAD_PCT:
         fails.append(f"spread>{config.MAX_BIDASK_SPREAD_PCT*100:.0f}%")
+
+    # Use VIX-adjusted delta/DTE ranges if provided
+    delta_min = vix_params["delta_min"] if vix_params else config.DELTA_MIN
+    delta_max = vix_params["delta_max"] if vix_params else config.DELTA_MAX
+    dte_min = vix_params["dte_min"] if vix_params else config.DTE_MIN
+    dte_max = vix_params["dte_max"] if vix_params else config.DTE_MAX
+
     if o.delta is None:
         fails.append("no_delta")
-    elif not (config.DELTA_MIN <= o.delta <= config.DELTA_MAX):
+    elif not (delta_min <= o.delta <= delta_max):
         fails.append(f"delta_out_of_range({o.delta:.2f})")
+
+    if not (dte_min <= o.dte <= dte_max):
+        fails.append(f"dte_out_of_range({o.dte})")
+
     return (len(fails) == 0, fails)
 
 
@@ -96,6 +109,10 @@ def _compute_option_metrics(o: OptionCandidate, spot: float) -> None:
     o.prob_otm = (1.0 - abs(o.delta)) if o.delta is not None else None
     o.prob_assignment = abs(o.delta) if o.delta is not None else None
 
+    # Expected value
+    if o.prob_otm is not None and o.prob_assignment is not None:
+        o.expected_value = (o.premium_income * o.prob_otm) - (o.loss_at_minus_20 * o.prob_assignment)
+
     # Stress test losses (shareholder loss if assigned at strike then stock falls)
     # Loss = (assignment_price - mkt_price) * 100 - premium_received
     # We use breakeven as effective cost basis after premium credit.
@@ -108,6 +125,10 @@ def _compute_option_metrics(o: OptionCandidate, spot: float) -> None:
     o.loss_at_minus_20 = loss_at(spot * 0.80)
     o.loss_at_minus_30 = loss_at(spot * 0.70)
     o.loss_at_minus_50 = loss_at(spot * 0.50)
+
+    # Recompute EV now that stress losses are available
+    if o.prob_otm is not None and o.prob_assignment is not None:
+        o.expected_value = (o.premium_income * o.prob_otm) - (o.loss_at_minus_20 * o.prob_assignment)
 
 
 def _select_best_option(opts: List[OptionCandidate]) -> Optional[OptionCandidate]:
@@ -129,7 +150,7 @@ def _select_best_option(opts: List[OptionCandidate]) -> Optional[OptionCandidate
     return opts[0]
 
 
-def screen_ticker(ticker: str, provider: DataProvider) -> tuple[Optional[TradeCandidate], str]:
+def screen_ticker(ticker: str, provider: DataProvider, vix_params=None) -> tuple[Optional[TradeCandidate], str]:
     """
     Returns (TradeCandidate or None, reason).
     Reason is empty on success or describes why ticker was rejected.
@@ -143,9 +164,10 @@ def screen_ticker(ticker: str, provider: DataProvider) -> tuple[Optional[TradeCa
     if not ok:
         return None, f"stock_filters[{','.join(fails)}]"
 
-    # Earnings window check (using max DTE)
-    _check_earnings_window(snap, config.DTE_MAX)
-    _check_ex_div_window(snap, config.DTE_MAX)
+    # Earnings window check (using max DTE — use VIX-adjusted if available)
+    max_dte = vix_params["dte_max"] if vix_params else config.DTE_MAX
+    _check_earnings_window(snap, max_dte)
+    _check_ex_div_window(snap, max_dte)
     if config.REJECT_ON_EARNINGS_IN_PERIOD and snap.earnings_in_window:
         return None, f"earnings_in_window({snap.next_earnings_date})"
 
@@ -158,10 +180,20 @@ def screen_ticker(ticker: str, provider: DataProvider) -> tuple[Optional[TradeCa
     for o in raw_opts:
         _compute_option_metrics(o, snap.price)
 
-    # Filter by Section B + delta range
+    # Compute IV rank and IV/HV ratio for each option
+    for o in raw_opts:
+        if o.iv is not None and snap.hv_52w_low is not None and snap.hv_52w_high is not None:
+            iv_range = snap.hv_52w_high - snap.hv_52w_low
+            if iv_range > 0.001:
+                o.iv_rank = (o.iv - snap.hv_52w_low) / iv_range
+                o.iv_rank = max(0.0, min(1.0, o.iv_rank))
+        if o.iv is not None and snap.hv_30 is not None and snap.hv_30 > 0.001:
+            o.iv_hv_ratio = o.iv / snap.hv_30
+
+    # Filter by Section B + delta range (VIX-aware)
     qualified = []
     for o in raw_opts:
-        ok, _ = _option_passes_filters(o)
+        ok, _ = _option_passes_filters(o, vix_params)
         if ok and o.annualized_return >= config.MIN_ANNUALIZED_RETURN:
             qualified.append(o)
 
@@ -179,6 +211,12 @@ def screen_ticker(ticker: str, provider: DataProvider) -> tuple[Optional[TradeCa
     snap.score_earnings_quality = earnings_quality_score(snap)
     snap.score_technical        = technical_score(snap)
     snap.score_event_risk       = event_risk_score(snap)
+    snap.score_beta_risk        = beta_risk_score(snap)
+
+    # Score the best option (new scores)
+    best.score_ev = ev_score(best)
+    best.score_iv_rank = iv_rank_score(best)
+    best.score_iv_hv_premium = iv_hv_premium_score(best)
 
     tc = TradeCandidate(stock=snap, option=best)
     tc.composite_score = composite_score(tc)

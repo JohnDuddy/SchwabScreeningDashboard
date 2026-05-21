@@ -63,6 +63,12 @@ class StockSnapshot:
     pct_from_52w_high: Optional[float] = None
     pct_from_52w_low: Optional[float] = None
 
+    # Volatility & risk
+    beta: Optional[float] = None
+    hv_30: Optional[float] = None           # 30-day historical volatility (annualized)
+    hv_52w_low: Optional[float] = None      # rolling 30d HV floor over 52 weeks
+    hv_52w_high: Optional[float] = None     # rolling 30d HV ceiling over 52 weeks
+
     # Event risk
     next_earnings_date: Optional[str] = None  # YYYY-MM-DD
     earnings_in_window: bool = False
@@ -76,6 +82,7 @@ class StockSnapshot:
     score_earnings_quality: float = 0.0
     score_technical: float = 0.0
     score_event_risk: float = 0.0  # higher = more risk
+    score_beta_risk: float = 0.0
 
     # Reasoning trail
     notes: list = field(default_factory=list)
@@ -120,6 +127,10 @@ class OptionCandidate:
     # Sub-scores
     score_option_liquidity: float = 0.0
     score_premium_attract: float = 0.0
+    score_ev: float = 0.0
+    score_iv_rank: float = 0.0
+    score_iv_hv_premium: float = 0.0
+    iv_hv_ratio: Optional[float] = None
 
 
 @dataclass
@@ -184,6 +195,15 @@ class TradeCandidate:
             "score_option_liquidity": round(o.score_option_liquidity, 1),
             "score_premium_attract": round(o.score_premium_attract, 1),
             "score_event_risk": round(s.score_event_risk, 1),
+            "beta": round(s.beta, 2) if s.beta is not None else None,
+            "hv_30_pct": round(s.hv_30 * 100, 1) if s.hv_30 is not None else None,
+            "iv_rank": round(o.iv_rank, 1) if o.iv_rank is not None else None,
+            "iv_hv_ratio": round(o.iv_hv_ratio, 2) if o.iv_hv_ratio is not None else None,
+            "expected_value": round(o.expected_value, 2) if o.expected_value is not None else None,
+            "score_beta_risk": round(s.score_beta_risk, 1),
+            "score_ev": round(o.score_ev, 1),
+            "score_iv_rank": round(o.score_iv_rank, 1),
+            "score_iv_hv_premium": round(o.score_iv_hv_premium, 1),
             "composite_score": round(self.composite_score, 1),
             "action": self.action,
             "explanation": self.explanation,

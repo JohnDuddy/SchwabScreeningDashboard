@@ -72,3 +72,58 @@ def premium_attractiveness_score(o: OptionCandidate) -> float:
         else: parts.append(25)
 
     return sum(parts) / len(parts)
+
+
+def ev_score(o: OptionCandidate) -> float:
+    """Score expected value of the trade. Returns 0-100."""
+    if o.expected_value is None or o.cash_required is None or o.cash_required <= 0:
+        return 50.0
+    ev_pct = o.expected_value / o.cash_required
+    # 2%+ EV = 100, 0% = 50, -2% = 0
+    if ev_pct >= 0.02:
+        return 100.0
+    if ev_pct >= 0.01:
+        return 85.0
+    if ev_pct >= 0.005:
+        return 70.0
+    if ev_pct >= 0.0:
+        return 50.0
+    if ev_pct >= -0.01:
+        return 30.0
+    if ev_pct >= -0.02:
+        return 15.0
+    return 0.0
+
+
+def iv_rank_score(o: OptionCandidate) -> float:
+    """Reward selling when IV is elevated. Returns 0-100."""
+    if o.iv_rank is None:
+        return 50.0
+    r = o.iv_rank
+    if 0.60 <= r <= 0.80:
+        return 100.0
+    if r > 0.80:
+        return 85.0
+    if 0.40 <= r < 0.60:
+        return 80.0
+    if 0.20 <= r < 0.40:
+        return 55.0
+    return 25.0
+
+
+def iv_hv_premium_score(o: OptionCandidate) -> float:
+    """Reward overpriced options (IV > HV). Returns 0-100."""
+    if o.iv_hv_ratio is None:
+        return 50.0
+    r = o.iv_hv_ratio
+    if r >= 1.5:
+        return 100.0
+    if r >= 1.3:
+        return 90.0
+    if r >= 1.1:
+        return 75.0
+    if r >= 1.0:
+        return 60.0
+    if r >= 0.8:
+        return 40.0
+    return 20.0
