@@ -104,7 +104,16 @@ tbody tr:nth-child(even):not(.highlight) { background: #fafbfc; }
 
 {% block content %}
 
+{# ── No-token message ─────────────────────────────────────────── #}
+{% if not has_token and not rows %}
+<div style="text-align:center;padding:3rem 1rem;color:var(--muted);">
+  <p style="font-size:1.05rem;margin-bottom:.5rem;">No position data available.</p>
+  <p style="font-size:.85rem;"><a href="/login">Connect to Schwab</a> to view covered call positions.</p>
+</div>
+{% else %}
+
 {# ── Summary cards ─────────────────────────────────────────────── #}
+{% if summary and summary.accounts is defined %}
 <div class="summary-grid">
   <div class="summary-card">
     <div class="label">Accounts Scanned</div>
@@ -115,7 +124,7 @@ tbody tr:nth-child(even):not(.highlight) { background: #fafbfc; }
     <div class="value">{{ summary.total_positions }}</div>
   </div>
   <div class="summary-card">
-    <div class="label">≥ 100 Shares</div>
+    <div class="label">&ge; 100 Shares</div>
     <div class="value">{{ summary.gte100 }}</div>
   </div>
   <div class="summary-card">
@@ -127,15 +136,16 @@ tbody tr:nth-child(even):not(.highlight) { background: #fafbfc; }
     <div class="value">{{ summary.total_to_sell }}</div>
   </div>
   <div class="summary-card">
-    <div class="label">Data Retrieved</div>
+    <div class="label">Last Updated</div>
     <div class="value" style="font-size:.9rem;padding-top:.3rem;">{{ summary.timestamp }}</div>
   </div>
 </div>
+{% endif %}
 
 {# ── Errors ────────────────────────────────────────────────────── #}
 {% if errors %}
 <div class="error-box">
-  <h4>⚠ Account Errors ({{ errors|length }})</h4>
+  <h4>Account Errors ({{ errors|length }})</h4>
   {% for e in errors %}<div>{{ e }}</div>{% endfor %}
 </div>
 {% endif %}
@@ -145,7 +155,7 @@ tbody tr:nth-child(even):not(.highlight) { background: #fafbfc; }
   {# Filter mode #}
   <label>Filter:</label>
   <select id="filterSelect" onchange="applyFilter(this.value)">
-    <option value="gte100" {% if filter_mode=='gte100' %}selected{% endif %}>≥ 100 shares</option>
+    <option value="gte100" {% if filter_mode=='gte100' %}selected{% endif %}>&ge; 100 shares</option>
     <option value="sell"   {% if filter_mode=='sell'   %}selected{% endif %}>Calls available only</option>
     <option value="all"    {% if filter_mode=='all'    %}selected{% endif %}>All positions</option>
   </select>
@@ -161,11 +171,18 @@ tbody tr:nth-child(even):not(.highlight) { background: #fafbfc; }
   <label style="margin-left:.5rem;">Search:</label>
   <input type="text" id="searchBox" placeholder="ticker / account…" oninput="filterTable()" style="width:160px;">
 
-  {# Export #}
+  {# Export + Rescan #}
   <div style="margin-left:auto;display:flex;gap:.5rem;">
-    <a href="/export/csv" class="btn btn-success">⬇ CSV</a>
-    <a href="/dashboard"  class="btn btn-secondary">🔄 Refresh</a>
+    {% if rows %}<a href="/export/csv" class="btn btn-success">CSV</a>{% endif %}
+    <button id="rescanBtn" class="btn btn-primary" onclick="startRescan()">
+      {% if running %}Refreshing…{% elif rows %}Rescan{% else %}Scan{% endif %}
+    </button>
   </div>
+</div>
+
+{# ── Refreshing indicator ─────────────────────────────────────── #}
+<div id="refreshing" style="display:{% if running %}block{% else %}none{% endif %};background:var(--card);border:1px solid var(--border);border-radius:8px;padding:.8rem 1.2rem;margin-bottom:1rem;font-size:.85rem;color:var(--muted);">
+  Refreshing positions from Schwab…
 </div>
 
 {# ── Table ─────────────────────────────────────────────────────── #}
@@ -206,7 +223,7 @@ tbody tr:nth-child(even):not(.highlight) { background: #fafbfc; }
       {% else %}
       <tr>
         <td colspan="12" style="text-align:center;padding:2.5rem;color:var(--muted);">
-          No positions match the current filter.
+          {% if running %}Loading positions…{% else %}No positions match the current filter.{% endif %}
         </td>
       </tr>
       {% endfor %}
@@ -220,7 +237,34 @@ tbody tr:nth-child(even):not(.highlight) { background: #fafbfc; }
   <span>No trades placed by this application</span>
 </div>
 
+{% endif %}
+
 <script>
+/* ── Rescan + polling ───────────────────────────────────────── */
+let statusInterval = null;
+
+function startRescan() {
+  fetch("/dashboard/start", { method: "POST" }).then(r => r.json()).then(d => {
+    if (d.status === "started" || d.status === "already_running") {
+      document.getElementById("rescanBtn").disabled = true;
+      document.getElementById("rescanBtn").textContent = "Refreshing…";
+      document.getElementById("refreshing").style.display = "block";
+      pollStatus();
+    }
+  });
+}
+
+function pollStatus() {
+  if (statusInterval) clearInterval(statusInterval);
+  statusInterval = setInterval(() => {
+    fetch("/dashboard/status").then(r => r.json()).then(d => {
+      if (!d.running) { clearInterval(statusInterval); location.reload(); }
+    });
+  }, 2000);
+}
+
+{% if running %}pollStatus();{% endif %}
+
 /* ── Sorting ─────────────────────────────────────────────────── */
 let sortCol = -1, sortDir = 1;
 

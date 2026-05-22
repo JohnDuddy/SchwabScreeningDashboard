@@ -63,7 +63,9 @@ td.ticker { font-weight: 700; color: var(--schwab-blue); }
   <h2 style="font-size:1.4rem;color:var(--schwab-blue);">Possible Cash-Secured PUTs</h2>
   <div>
     {% if rows %}<a href="/csp/export/csv" class="btn btn-success">CSV</a>{% endif %}
-    <button id="startBtn" class="btn btn-primary" onclick="startScan()">Run Scan</button>
+    <button id="startBtn" class="btn btn-primary" onclick="startScan()">
+      {%- if running %}Scanning…{% elif rows %}Rescan{% else %}Run Scan{% endif -%}
+    </button>
   </div>
 </div>
 

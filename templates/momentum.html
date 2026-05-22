@@ -69,7 +69,9 @@ table.momentum tbody tr:hover { background: #f0f4fa; }
     {% if rows %}
       <a href="/momentum/export/csv" class="btn btn-success">⬇ CSV</a>
     {% endif %}
-    <button id="startBtn" class="btn btn-primary" onclick="startScan()">▶ Run Scan</button>
+    <button id="startBtn" class="btn btn-primary" onclick="startScan()">
+      {%- if running %}Scanning…{% elif rows %}Rescan{% else %}Run Scan{% endif -%}
+    </button>
   </div>
 </div>
 

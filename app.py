@@ -480,35 +480,28 @@ def logout():
 
 @app.route("/dashboard")
 def dashboard():
-    token = get_valid_token()
-    if not token:
-        return redirect(url_for("login"))
-
     show_full = request.args.get("show_full", "false").lower() == "true"
     filter_mode = request.args.get("filter", "sell")   # all | gte100 | sell
 
-    errors = []
-    accounts_data = []
+    with _dash_lock:
+        running   = _dash_state["running"]
+        completed = _dash_state["completed"]
+        rows      = _dash_state.get("results")
+        summary   = _dash_state.get("summary")
+        errors    = _dash_state.get("errors") or []
 
-    # 1. Fetch account numbers
-    try:
-        acct_nums_resp = schwab_get("/accounts/accountNumbers", token)
-        hashes = [a.get("hashValue") for a in acct_nums_resp if a.get("hashValue")]
-    except Exception as e:
-        return render_template("error.html", message=f"Failed to retrieve accounts: {e}")
+    has_token = get_valid_token() is not None
 
-    # 2. Fetch positions for each account
-    for h in hashes:
-        try:
-            data = schwab_get(f"/accounts/{h}", token, params={"fields": "positions"})
-            accounts_data.append(data)
-        except Exception as e:
-            errors.append(f"Account {h[:8]}…: {e}")
+    if rows is None:
+        # No data yet
+        return render_template(
+            "dashboard.html",
+            rows=[], summary={}, errors=errors,
+            show_full=show_full, filter_mode=filter_mode,
+            running=running, has_token=has_token, completed=completed,
+        )
 
-    # 3. Parse positions
-    rows = parse_positions(accounts_data, show_full_account=show_full)
-
-    # 4. Apply filter
+    # Apply filter
     if filter_mode == "gte100":
         display_rows = [r for r in rows if r["abs_shares"] >= 100]
     elif filter_mode == "sell":
@@ -516,23 +509,14 @@ def dashboard():
     else:
         display_rows = rows
 
-    # 5. Summary stats
-    summary = {
-        "accounts":       len(accounts_data),
-        "total_positions": len(rows),
-        "gte100":         sum(1 for r in rows if r["abs_shares"] >= 100),
-        "total_cc":       sum(r["cc_present"] for r in rows),
-        "total_to_sell":  sum(r["to_be_sold"] for r in rows),
-        "timestamp":      datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    }
-
     return render_template(
         "dashboard.html",
         rows=display_rows,
-        summary=summary,
+        summary=summary or {},
         errors=errors,
         show_full=show_full,
         filter_mode=filter_mode,
+        running=running, has_token=has_token, completed=completed,
     )
 
 
@@ -594,6 +578,44 @@ def api_data():
         return jsonify(rows)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/dashboard/start", methods=["POST"])
+def dashboard_start():
+    with _dash_lock:
+        if _dash_state["running"]:
+            return jsonify({"status": "already_running"})
+        _dash_state["running"] = True
+    threading.Thread(target=_run_dashboard_background, daemon=True).start()
+    return jsonify({"status": "started"})
+
+
+@app.route("/dashboard/status")
+def dashboard_status():
+    with _dash_lock:
+        return jsonify({
+            "running":   _dash_state["running"],
+            "completed": _dash_state["completed"].isoformat() if _dash_state["completed"] else None,
+        })
+
+
+@app.route("/options/start", methods=["POST"])
+def options_start():
+    with _opts_lock:
+        if _opts_state["running"]:
+            return jsonify({"status": "already_running"})
+        _opts_state["running"] = True
+    threading.Thread(target=_run_options_background, daemon=True).start()
+    return jsonify({"status": "started"})
+
+
+@app.route("/options/status")
+def options_status():
+    with _opts_lock:
+        return jsonify({
+            "running":   _opts_state["running"],
+            "completed": _opts_state["completed"].isoformat() if _opts_state["completed"] else None,
+        })
 
 
 def generate_self_signed_cert(cert_file, key_file):
@@ -732,38 +754,25 @@ def parse_option_positions(accounts_data: list, show_full_account: bool = False)
 
 @app.route("/options")
 def options_page():
-    token = get_valid_token()
-    if not token:
-        return redirect(url_for("login"))
-
     show_full = request.args.get("show_full", "false").lower() == "true"
     filter_type = request.args.get("type", "all")  # all | call | put
 
-    errors = []
-    accounts_data = []
+    with _opts_lock:
+        running   = _opts_state["running"]
+        completed = _opts_state["completed"]
+        rows      = _opts_state.get("results")
+        summary   = _opts_state.get("summary")
+        errors    = _opts_state.get("errors") or []
 
-    try:
-        acct_nums_resp = schwab_get("/accounts/accountNumbers", token)
-        hashes = [a.get("hashValue") for a in acct_nums_resp if a.get("hashValue")]
-    except Exception as e:
-        return render_template("error.html", message=f"Failed to retrieve accounts: {e}")
+    has_token = get_valid_token() is not None
 
-    for h in hashes:
-        try:
-            data = schwab_get(f"/accounts/{h}", token, params={"fields": "positions"})
-            accounts_data.append(data)
-        except Exception as e:
-            errors.append(f"Account {h[:8]}…: {e}")
-
-    rows = parse_option_positions(accounts_data, show_full_account=show_full)
-
-    # Fetch live underlying stock prices for ALL unique tickers in options
-    underlying_tickers = list(set(r["underlying"] for r in rows if r["underlying"]))
-    logger.info("OPTIONS: Fetching live quotes for %d underlying tickers: %s", len(underlying_tickers), underlying_tickers)
-    live_prices = fetch_underlying_quotes(underlying_tickers, token)
-    logger.info("OPTIONS: Got %d prices back: %s", len(live_prices), live_prices)
-    for r in rows:
-        r["current_price"] = live_prices.get(r["underlying"], 0)
+    if rows is None:
+        return render_template(
+            "options.html",
+            rows=[], summary={}, errors=errors,
+            show_full=show_full, filter_type=filter_type,
+            running=running, has_token=has_token, completed=completed,
+        )
 
     # Apply type filter
     if filter_type == "call":
@@ -773,29 +782,14 @@ def options_page():
     else:
         display_rows = rows
 
-    # Summary
-    total_calls = sum(1 for r in rows if r["type"] == "CALL")
-    total_puts  = sum(1 for r in rows if r["type"] == "PUT")
-    total_pnl   = sum(r["pnl"] for r in rows)
-    total_mv    = sum(r["market_value"] for r in rows)
-
-    summary = {
-        "accounts":     len(accounts_data),
-        "total":        len(rows),
-        "calls":        total_calls,
-        "puts":         total_puts,
-        "total_pnl":    total_pnl,
-        "total_mv":     total_mv,
-        "timestamp":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    }
-
     return render_template(
         "options.html",
         rows=display_rows,
-        summary=summary,
+        summary=summary or {},
         errors=errors,
         show_full=show_full,
         filter_type=filter_type,
+        running=running, has_token=has_token, completed=completed,
     )
 
 
@@ -843,6 +837,18 @@ def options_export_csv():
 
 # ── Cash-Secured Put screener routes ───────────────────────────────────────
 
+_dash_state = {
+    "running": False, "completed": None,
+    "results": None, "summary": None, "errors": None,
+}
+_dash_lock = threading.Lock()
+
+_opts_state = {
+    "running": False, "completed": None,
+    "results": None, "summary": None, "errors": None,
+}
+_opts_lock = threading.Lock()
+
 _csp_state = {
     "running":   False,
     "started":   None,
@@ -854,6 +860,116 @@ _csp_state = {
     "error":     None,
 }
 _csp_lock = threading.Lock()
+
+
+def _run_dashboard_background():
+    """Background thread to fetch covered-call positions."""
+    try:
+        token = get_valid_token()
+        if not token:
+            logger.info("Dashboard scan skipped — no valid Schwab token")
+            return
+
+        errors = []
+        accounts_data = []
+        acct_nums_resp = schwab_get("/accounts/accountNumbers", token)
+        hashes = [a.get("hashValue") for a in acct_nums_resp if a.get("hashValue")]
+
+        for h in hashes:
+            try:
+                data = schwab_get(f"/accounts/{h}", token, params={"fields": "positions"})
+                accounts_data.append(data)
+            except Exception as e:
+                errors.append(f"Account {h[:8]}…: {e}")
+
+        rows = parse_positions(accounts_data, show_full_account=False)
+
+        summary = {
+            "accounts":       len(accounts_data),
+            "total_positions": len(rows),
+            "gte100":         sum(1 for r in rows if r["abs_shares"] >= 100),
+            "total_cc":       sum(r["cc_present"] for r in rows),
+            "total_to_sell":  sum(r["to_be_sold"] for r in rows),
+            "timestamp":      datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+        with _dash_lock:
+            _dash_state["results"]   = rows
+            _dash_state["summary"]   = summary
+            _dash_state["errors"]    = errors
+            _dash_state["completed"] = datetime.now()
+
+        from scan_cache import save_scan
+        save_scan("dashboard", {"rows": rows, "summary": summary, "errors": errors})
+
+    except Exception as e:
+        logger.exception("Dashboard scan failed: %s", e)
+        with _dash_lock:
+            _dash_state["errors"] = [str(e)]
+    finally:
+        with _dash_lock:
+            _dash_state["running"] = False
+
+
+def _run_options_background():
+    """Background thread to fetch option positions."""
+    try:
+        token = get_valid_token()
+        if not token:
+            logger.info("Options scan skipped — no valid Schwab token")
+            return
+
+        errors = []
+        accounts_data = []
+        acct_nums_resp = schwab_get("/accounts/accountNumbers", token)
+        hashes = [a.get("hashValue") for a in acct_nums_resp if a.get("hashValue")]
+
+        for h in hashes:
+            try:
+                data = schwab_get(f"/accounts/{h}", token, params={"fields": "positions"})
+                accounts_data.append(data)
+            except Exception as e:
+                errors.append(f"Account {h[:8]}…: {e}")
+
+        rows = parse_option_positions(accounts_data, show_full_account=False)
+
+        # Fetch live underlying prices
+        underlying_tickers = list(set(r["underlying"] for r in rows if r["underlying"]))
+        live_prices = fetch_underlying_quotes(underlying_tickers, token)
+        for r in rows:
+            r["current_price"] = live_prices.get(r["underlying"], 0)
+
+        total_calls = sum(1 for r in rows if r["type"] == "CALL")
+        total_puts  = sum(1 for r in rows if r["type"] == "PUT")
+        total_pnl   = sum(r["pnl"] for r in rows)
+        total_mv    = sum(r["market_value"] for r in rows)
+
+        summary = {
+            "accounts":  len(accounts_data),
+            "total":     len(rows),
+            "calls":     total_calls,
+            "puts":      total_puts,
+            "total_pnl": total_pnl,
+            "total_mv":  total_mv,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+        with _opts_lock:
+            _opts_state["results"]   = rows
+            _opts_state["summary"]   = summary
+            _opts_state["errors"]    = errors
+            _opts_state["completed"] = datetime.now()
+
+        from scan_cache import save_scan
+        save_scan("options", {"rows": rows, "summary": summary, "errors": errors})
+
+    except Exception as e:
+        logger.exception("Options scan failed: %s", e)
+        with _opts_lock:
+            _opts_state["errors"] = [str(e)]
+    finally:
+        with _opts_lock:
+            _opts_state["running"] = False
 
 
 def _run_csp_background():
@@ -918,6 +1034,15 @@ def _run_csp_background():
             _csp_state["results"]   = rows
             _csp_state["completed"] = datetime.now()
             _csp_state["rejections"] = rejections
+
+        # Persist to disk
+        from scan_cache import save_scan
+        save_scan("csp", {
+            "rows": rows,
+            "rejections": rejections,
+            "vix_level": vix_level,
+            "vix_regime": vix_regime,
+        })
 
     except Exception as e:
         logger.exception("CSP scan failed: %s", e)
@@ -1138,6 +1263,14 @@ def _run_scan_background():
         with _scan_lock:
             _scan_state["results"]   = df
             _scan_state["completed"] = datetime.now()
+
+        # Persist to disk
+        from scan_cache import save_scan
+        save_scan("momentum", {
+            "records": df.to_dict("records"),
+            "columns": list(df.columns),
+        })
+
     except Exception as e:
         logger.exception("Scan failed: %s", e)
         with _scan_lock:
@@ -1238,6 +1371,86 @@ def momentum_export_csv():
     )
 
 
+def _startup_scans():
+    """Load cached results, then start fresh background scans."""
+    from scan_cache import load_scan
+
+    # 1. Load persisted results into state dicts immediately
+    cached_csp = load_scan("csp")
+    if cached_csp:
+        with _csp_lock:
+            _csp_state["results"]    = cached_csp["data"]["rows"]
+            _csp_state["completed"]  = datetime.fromisoformat(cached_csp["timestamp"])
+            _csp_state["vix_level"]  = cached_csp["data"].get("vix_level")
+            _csp_state["vix_regime"] = cached_csp["data"].get("vix_regime")
+            _csp_state["rejections"] = cached_csp["data"].get("rejections", {})
+        logger.info("Loaded cached CSP results (%d rows)", len(cached_csp["data"]["rows"]))
+
+    cached_momentum = load_scan("momentum")
+    if cached_momentum:
+        try:
+            records = cached_momentum["data"]["records"]
+            df = pd.DataFrame(records)
+            with _scan_lock:
+                _scan_state["results"]   = df
+                _scan_state["completed"] = datetime.fromisoformat(cached_momentum["timestamp"])
+            logger.info("Loaded cached momentum results (%d rows)", len(records))
+        except Exception as e:
+            logger.warning("Failed to restore momentum cache: %s", e)
+
+    cached_dash = load_scan("dashboard")
+    if cached_dash:
+        with _dash_lock:
+            _dash_state["results"]   = cached_dash["data"]["rows"]
+            _dash_state["summary"]   = cached_dash["data"]["summary"]
+            _dash_state["errors"]    = cached_dash["data"].get("errors", [])
+            _dash_state["completed"] = datetime.fromisoformat(cached_dash["timestamp"])
+        logger.info("Loaded cached dashboard results (%d rows)", len(cached_dash["data"]["rows"]))
+
+    cached_opts = load_scan("options")
+    if cached_opts:
+        with _opts_lock:
+            _opts_state["results"]   = cached_opts["data"]["rows"]
+            _opts_state["summary"]   = cached_opts["data"]["summary"]
+            _opts_state["errors"]    = cached_opts["data"].get("errors", [])
+            _opts_state["completed"] = datetime.fromisoformat(cached_opts["timestamp"])
+        logger.info("Loaded cached options results (%d rows)", len(cached_opts["data"]["rows"]))
+
+    # 2. Start fresh scans in background threads
+    # Dashboard + Options: only if Schwab token available
+    if get_valid_token():
+        with _dash_lock:
+            _dash_state["running"] = True
+        threading.Thread(target=_run_dashboard_background, daemon=True).start()
+
+        with _opts_lock:
+            _opts_state["running"] = True
+        threading.Thread(target=_run_options_background, daemon=True).start()
+        logger.info("Auto-started dashboard + options scans (Schwab token available)")
+    else:
+        logger.info("Skipping dashboard/options auto-scan (no Schwab token)")
+
+    # CSP + Momentum: always start (use yfinance, no OAuth needed)
+    with _csp_lock:
+        _csp_state["running"] = True
+        _csp_state["started"] = datetime.now()
+        _csp_state["progress"] = 0
+        _csp_state["total"] = 0
+        _csp_state["current"] = ""
+        _csp_state["error"] = None
+    threading.Thread(target=_run_csp_background, daemon=True).start()
+
+    with _scan_lock:
+        _scan_state["running"] = True
+        _scan_state["started"] = datetime.now()
+        _scan_state["progress"] = 0
+        _scan_state["total"] = 0
+        _scan_state["current"] = ""
+        _scan_state["error"] = None
+    threading.Thread(target=_run_scan_background, daemon=True).start()
+    logger.info("Auto-started CSP + momentum scans")
+
+
 if __name__ == "__main__":
     import ssl, sys
 
@@ -1256,6 +1469,9 @@ if __name__ == "__main__":
 
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(CERT_FILE, KEY_FILE)
+
+    # Load cached results + start fresh background scans
+    _startup_scans()
 
     print("\n" + "="*60)
     print("  Schwab Covered Call Dashboard")

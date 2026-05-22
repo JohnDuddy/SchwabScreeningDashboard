@@ -78,7 +78,16 @@ td.ticker { font-weight: 700; color: var(--schwab-blue); }
 
 {% block content %}
 
+{# ── No-token message ─────────────────────────────────────────── #}
+{% if not has_token and not rows %}
+<div style="text-align:center;padding:3rem 1rem;color:var(--muted);">
+  <p style="font-size:1.05rem;margin-bottom:.5rem;">No option data available.</p>
+  <p style="font-size:.85rem;"><a href="/login">Connect to Schwab</a> to view option positions.</p>
+</div>
+{% else %}
+
 {# ── Summary cards ─────────────────────────────────────────────── #}
+{% if summary and summary.accounts is defined %}
 <div class="summary-grid">
   <div class="summary-card">
     <div class="label">Accounts</div>
@@ -101,15 +110,16 @@ td.ticker { font-weight: 700; color: var(--schwab-blue); }
     <div class="value">${{ "{:,.2f}".format(summary.total_pnl) }}</div>
   </div>
   <div class="summary-card">
-    <div class="label">Data Retrieved</div>
+    <div class="label">Last Updated</div>
     <div class="value" style="font-size:.85rem;padding-top:.3rem;">{{ summary.timestamp }}</div>
   </div>
 </div>
+{% endif %}
 
 {# ── Errors ────────────────────────────────────────────────────── #}
 {% if errors %}
 <div style="background:#fdf1f0;border:1px solid #f5c0bb;border-radius:8px;padding:1rem 1.4rem;margin-bottom:1.2rem;font-size:.85rem;color:var(--danger);">
-  <strong>⚠ Account Errors ({{ errors|length }})</strong>
+  <strong>Account Errors ({{ errors|length }})</strong>
   {% for e in errors %}<div>{{ e }}</div>{% endfor %}
 </div>
 {% endif %}
@@ -133,9 +143,16 @@ td.ticker { font-weight: 700; color: var(--schwab-blue); }
   <input type="text" id="searchBox" placeholder="ticker / account…" oninput="filterTable()" style="width:160px;">
 
   <div style="margin-left:auto;display:flex;gap:.5rem;">
-    <a href="/options/export/csv" class="btn btn-success">⬇ CSV</a>
-    <a href="/options" class="btn btn-secondary">🔄 Refresh</a>
+    {% if rows %}<a href="/options/export/csv" class="btn btn-success">CSV</a>{% endif %}
+    <button id="rescanBtn" class="btn btn-primary" onclick="startRescan()">
+      {% if running %}Refreshing…{% elif rows %}Rescan{% else %}Scan{% endif %}
+    </button>
   </div>
+</div>
+
+{# ── Refreshing indicator ─────────────────────────────────────── #}
+<div id="refreshing" style="display:{% if running %}block{% else %}none{% endif %};background:var(--card);border:1px solid var(--border);border-radius:8px;padding:.8rem 1.2rem;margin-bottom:1rem;font-size:.85rem;color:var(--muted);">
+  Refreshing option positions from Schwab…
 </div>
 
 {# ── Table ─────────────────────────────────────────────────────── #}
@@ -176,7 +193,7 @@ td.ticker { font-weight: 700; color: var(--schwab-blue); }
           <td style="max-width:250px;white-space:normal;font-size:.8rem;">{{ r.description }}</td>
           <td>{{ r.expiration }}</td>
           <td class="num">{{ r.strike }}</td>
-          <td class="num">{% if r.current_price %}${{ "%.2f"|format(r.current_price) }}{% else %}—{% endif %}</td>
+          <td class="num">{% if r.current_price %}${{ "%.2f"|format(r.current_price) }}{% else %}&mdash;{% endif %}</td>
           <td class="num">{{ r.quantity }}</td>
           <td class="num">${{ "%.2f"|format(r.avg_price) }}</td>
           <td class="num">${{ "{:,.2f}".format(r.market_value) }}</td>
@@ -186,7 +203,7 @@ td.ticker { font-weight: 700; color: var(--schwab-blue); }
         </tr>
       {% else %}
         <tr><td colspan="13" style="text-align:center;padding:2.5rem;color:var(--muted);">
-          No option positions found.
+          {% if running %}Loading option positions…{% else %}No option positions found.{% endif %}
         </td></tr>
       {% endfor %}
     </tbody>
@@ -199,7 +216,35 @@ td.ticker { font-weight: 700; color: var(--schwab-blue); }
   <span>No trades placed by this application</span>
 </div>
 
+{% endif %}
+
 <script>
+/* ── Rescan + polling ───────────────────────────────────────── */
+let statusInterval = null;
+
+function startRescan() {
+  fetch("/options/start", { method: "POST" }).then(r => r.json()).then(d => {
+    if (d.status === "started" || d.status === "already_running") {
+      document.getElementById("rescanBtn").disabled = true;
+      document.getElementById("rescanBtn").textContent = "Refreshing…";
+      document.getElementById("refreshing").style.display = "block";
+      pollStatus();
+    }
+  });
+}
+
+function pollStatus() {
+  if (statusInterval) clearInterval(statusInterval);
+  statusInterval = setInterval(() => {
+    fetch("/options/status").then(r => r.json()).then(d => {
+      if (!d.running) { clearInterval(statusInterval); location.reload(); }
+    });
+  }, 2000);
+}
+
+{% if running %}pollStatus();{% endif %}
+
+/* ── Sorting / filtering ─────────────────────────────────────── */
 let sortCol = -1, sortDir = 1;
 
 function sortTable(col) {
