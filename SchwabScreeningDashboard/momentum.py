@@ -16,12 +16,16 @@ import json
 import math
 import time
 import logging
+import threading
 from datetime import datetime, timedelta
 from typing import Optional
 
 import numpy as np
 import pandas as pd
 import requests
+
+# yfinance is not thread-safe; serialise all downloads behind this lock.
+_yf_lock = threading.Lock()
 
 logger = logging.getLogger(__name__)
 
@@ -105,12 +109,13 @@ def fetch_schwab_history(symbol: str, days: int = 120, token: str | None = None)
 
 
 def fetch_yahoo_history(symbol: str, days: int = 120) -> Optional[pd.DataFrame]:
-    """Fallback fetch via yfinance."""
+    """Fallback fetch via yfinance. Serialised with _yf_lock — yfinance is not thread-safe."""
     try:
         import yfinance as yf
         end   = datetime.now()
         start = end - timedelta(days=days * 2)   # extra cushion for non-trading days
-        df    = yf.download(symbol, start=start, end=end, progress=False, auto_adjust=False)
+        with _yf_lock:
+            df = yf.download(symbol, start=start, end=end, progress=False, auto_adjust=False)
         if df is None or df.empty:
             return None
         # Handle yfinance multi-index columns

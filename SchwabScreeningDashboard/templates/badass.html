@@ -188,6 +188,11 @@ td.fs.lo  { color: var(--danger); }
   SPY (${{ red_flag.spy_price }}) is <strong>+{{ red_flag.pct_diff }}%</strong>
   above its 200-day MA (${{ red_flag.ma200 }}) — market regime is healthy.
 </div>
+{% elif red_flag and red_flag.regime == 'unknown' %}
+<div class="regime-banner regime-caution">
+  <span class="regime-icon">⚠</span>
+  Market regime unknown — SPY data could not be verified. No penalty applied. Rescan to retry.
+</div>
 {% endif %}
 
 {# ── Hero bar ───────────────────────────────────────────────────────────── #}

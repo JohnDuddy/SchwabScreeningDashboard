@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from typing import Callable, Optional
 
 import numpy as np
@@ -162,6 +163,14 @@ def compute_red_flag(spy_px: pd.Series) -> dict:
         return {"active": False, "spy_price": 0.0, "ma200": None, "pct_diff": None, "regime": "unknown"}
 
     current = float(spy_px.iloc[-1])
+
+    # Sanity check: SPY below $350 almost certainly means bad/stale data
+    # (SPY has been above $350 since 2020 and has never retraced that far).
+    # Return unknown rather than trigger a false red flag.
+    if current < 350:
+        logger.warning("SPY price %.2f looks like bad data — skipping red flag", current)
+        return {"active": False, "spy_price": round(current, 2), "ma200": None, "pct_diff": None, "regime": "unknown"}
+
     lookback = min(len(spy_px), 200)
     ma200 = float(spy_px.rolling(lookback).mean().iloc[-1])
     pct_diff = round((current / ma200 - 1.0) * 100, 2)
@@ -346,6 +355,8 @@ def run_badass_screen(
         except Exception as exc:
             logger.warning("badass_screen: %s failed — %s", sym, exc)
             continue
+
+        time.sleep(0.05)  # polite rate limit — prevents yfinance throttling
 
     # Sort by composite score descending
     rows.sort(key=lambda r: r["composite_score"], reverse=True)
