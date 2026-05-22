@@ -1,0 +1,20 @@
+.env
+.schwab_tokens.json
+__pycache__/
+*.pyc
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+# SSL certs (auto-generated on first run)
+cert.pem
+key.pem
+# Scan cache files
+.cache_*.json
+.company_name_cache.json
+.universe_cache.json
+# Logs
+*.log
+server.stdout.log
+server.stderr.log

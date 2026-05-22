@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+{% block title %}Compare CSP Candidates{% endblock %}
+
+{% block extra_style %}
+.compare-grid {
+  display: grid;
+  grid-template-columns: 160px repeat({{ rows|length }}, 1fr);
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: .82rem;
+}
+.compare-grid .cell {
+  padding: .55rem .7rem;
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+.compare-grid .cell:last-child { border-right: none; }
+.compare-grid .label-cell {
+  background: #f8f9fb; font-weight: 600; color: var(--muted);
+  font-size: .78rem; text-transform: uppercase; letter-spacing: .03em;
+  position: sticky; left: 0; z-index: 1;
+}
+.compare-grid .header-cell {
+  background: var(--schwab-blue); color: #fff; font-weight: 700;
+  text-align: center; font-size: .9rem; padding: .7rem;
+}
+.compare-grid .num { text-align: right; font-variant-numeric: tabular-nums; }
+.compare-grid .best { background: #E6F4EA; font-weight: 700; }
+.positive { color: var(--accent); }
+.negative { color: var(--danger); }
+
+.action-strong { background: #E6F4EA; color: #1A6B35; padding: .15rem .5rem; border-radius: 10px; font-size: .75rem; font-weight: 700; }
+.action-accept { background: #E8F0FE; color: #0057A8; padding: .15rem .5rem; border-radius: 10px; font-size: .75rem; font-weight: 700; }
+.action-watch  { background: #FFF3E0; color: #E07B00; padding: .15rem .5rem; border-radius: 10px; font-size: .75rem; font-weight: 700; }
+.action-reject { background: #FDF1F0; color: #C0392B; padding: .15rem .5rem; border-radius: 10px; font-size: .75rem; font-weight: 700; }
+{% endblock %}
+
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1.5rem;">
+  <h2 style="font-size:1.4rem;color:var(--schwab-blue);">Compare CSP Candidates</h2>
+  <a href="/csp" class="btn btn-secondary">Back to Screener</a>
+</div>
+
+{% if not rows %}
+<div style="text-align:center;padding:3rem 1rem;color:var(--muted);">
+  <p>No matching tickers found in scan results. Run a CSP scan first.</p>
+</div>
+{% else %}
+
+<div class="compare-grid">
+  {# Header row #}
+  <div class="cell label-cell" style="background:var(--schwab-blue);color:#fff;">Metric</div>
+  {% for r in rows %}
+  <div class="cell header-cell">{{ r.ticker }}</div>
+  {% endfor %}
+
+  {# Company #}
+  <div class="cell label-cell">Company</div>
+  {% for r in rows %}
+  <div class="cell" style="font-size:.78rem;white-space:normal;">{{ r.company_name }}</div>
+  {% endfor %}
+
+  {# Sector #}
+  <div class="cell label-cell">Sector</div>
+  {% for r in rows %}
+  <div class="cell" style="font-size:.78rem;">{{ r.sector }}</div>
+  {% endfor %}
+
+  {# Price #}
+  <div class="cell label-cell">Price</div>
+  {% for r in rows %}
+  <div class="cell num">${{ "%.2f"|format(r.price) }}</div>
+  {% endfor %}
+
+  {# Strike #}
+  <div class="cell label-cell">Strike</div>
+  {% for r in rows %}
+  <div class="cell num">${{ "%.2f"|format(r.strike) }}</div>
+  {% endfor %}
+
+  {# DTE #}
+  <div class="cell label-cell">DTE</div>
+  {% for r in rows %}
+  <div class="cell num">{{ r.dte }}</div>
+  {% endfor %}
+
+  {# Premium #}
+  <div class="cell label-cell">Premium</div>
+  {% for r in rows %}
+  <div class="cell num">${{ "%.0f"|format(r.premium_income) }}</div>
+  {% endfor %}
+
+  {# Annualized Return #}
+  {% set ann_vals = rows | map(attribute='annualized_return_pct') | list %}
+  {% set ann_best = ann_vals | max %}
+  <div class="cell label-cell">Ann. Return %</div>
+  {% for r in rows %}
+  <div class="cell num positive{{ ' best' if r.annualized_return_pct == ann_best else '' }}">{{ "%.1f"|format(r.annualized_return_pct) }}%</div>
+  {% endfor %}
+
+  {# Delta #}
+  <div class="cell label-cell">Delta</div>
+  {% for r in rows %}
+  <div class="cell num">{{ "%.2f"|format(r.delta or 0) }}</div>
+  {% endfor %}
+
+  {# P(OTM) #}
+  {% set potm_vals = rows | map(attribute='prob_otm') | select('ne', none) | list %}
+  {% set potm_best = potm_vals | max if potm_vals else 0 %}
+  <div class="cell label-cell">P(OTM)</div>
+  {% for r in rows %}
+  <div class="cell num{{ ' best' if r.prob_otm == potm_best else '' }}">{{ "%.0f"|format(r.prob_otm or 0) }}%</div>
+  {% endfor %}
+
+  {# Discount #}
+  {% set disc_vals = rows | map(attribute='discount_pct') | list %}
+  {% set disc_best = disc_vals | max %}
+  <div class="cell label-cell">Discount %</div>
+  {% for r in rows %}
+  <div class="cell num positive{{ ' best' if r.discount_pct == disc_best else '' }}">{{ "%.1f"|format(r.discount_pct) }}%</div>
+  {% endfor %}
+
+  {# IV Rank #}
+  <div class="cell label-cell">IV Rank</div>
+  {% for r in rows %}
+  <div class="cell num">{{ "%.0f"|format(r.iv_rank) if r.iv_rank is not none else '–' }}</div>
+  {% endfor %}
+
+  {# EV #}
+  <div class="cell label-cell">Expected Value</div>
+  {% for r in rows %}
+  <div class="cell num {{ 'positive' if (r.expected_value or 0) > 0 else 'negative' if (r.expected_value or 0) < 0 else '' }}">{{ "$%.0f"|format(r.expected_value) if r.expected_value is not none else '–' }}</div>
+  {% endfor %}
+
+  {# Beta #}
+  <div class="cell label-cell">Beta</div>
+  {% for r in rows %}
+  <div class="cell num">{{ "%.2f"|format(r.beta) if r.beta is not none else '–' }}</div>
+  {% endfor %}
+
+  {# Score: Quality #}
+  <div class="cell label-cell">Quality</div>
+  {% for r in rows %}
+  <div class="cell num">{{ "%.0f"|format(r.score_quality) }}</div>
+  {% endfor %}
+
+  {# Score: Valuation #}
+  <div class="cell label-cell">Valuation</div>
+  {% for r in rows %}
+  <div class="cell num">{{ "%.0f"|format(r.score_valuation) }}</div>
+  {% endfor %}
+
+  {# Score: Balance Sheet #}
+  <div class="cell label-cell">Balance Sheet</div>
+  {% for r in rows %}
+  <div class="cell num">{{ "%.0f"|format(r.score_balance) }}</div>
+  {% endfor %}
+
+  {# Score: Technical #}
+  <div class="cell label-cell">Technical</div>
+  {% for r in rows %}
+  <div class="cell num">{{ "%.0f"|format(r.score_technical) }}</div>
+  {% endfor %}
+
+  {# Score: EV Score #}
+  <div class="cell label-cell">EV Score</div>
+  {% for r in rows %}
+  <div class="cell num">{{ "%.0f"|format(r.score_ev) }}</div>
+  {% endfor %}
+
+  {# Score: IV Rank Score #}
+  <div class="cell label-cell">IV Rank Score</div>
+  {% for r in rows %}
+  <div class="cell num">{{ "%.0f"|format(r.score_iv_rank) }}</div>
+  {% endfor %}
+
+  {# Score: Beta Risk #}
+  <div class="cell label-cell">Beta Risk</div>
+  {% for r in rows %}
+  <div class="cell num">{{ "%.0f"|format(r.score_beta_risk) }}</div>
+  {% endfor %}
+
+  {# Composite #}
+  {% set comp_vals = rows | map(attribute='composite_score') | list %}
+  {% set comp_best = comp_vals | max %}
+  <div class="cell label-cell" style="font-weight:800;">Composite</div>
+  {% for r in rows %}
+  <div class="cell num{{ ' best' if r.composite_score == comp_best else '' }}" style="font-weight:700;font-size:.95rem;">{{ "%.1f"|format(r.composite_score) }}</div>
+  {% endfor %}
+
+  {# Action #}
+  <div class="cell label-cell">Action</div>
+  {% for r in rows %}
+  <div class="cell" style="text-align:center;">
+    {% if r.action == 'Strong' %}<span class="action-strong">{{ r.action }}</span>
+    {% elif r.action == 'Accept' %}<span class="action-accept">{{ r.action }}</span>
+    {% elif r.action == 'Watch' %}<span class="action-watch">{{ r.action }}</span>
+    {% else %}<span class="action-reject">{{ r.action }}</span>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+{% endif %}
+{% endblock %}

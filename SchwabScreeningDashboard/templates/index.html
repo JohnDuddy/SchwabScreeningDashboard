@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Schwab Covered Calls – Home{% endblock %}
+
+{% block extra_style %}
+.hero {
+  text-align: center;
+  padding: 3.5rem 2rem;
+}
+.hero h2 { font-size: 1.8rem; color: var(--schwab-blue); margin-bottom: .6rem; }
+.hero p  { color: var(--muted); max-width: 560px; margin: 0 auto 2rem; line-height: 1.6; }
+.steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1.2rem;
+  margin-top: 2rem;
+}
+.step {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.4rem;
+  text-align: left;
+}
+.step-num {
+  width: 32px; height: 32px;
+  background: var(--schwab-light);
+  color: #fff;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: .9rem;
+  margin-bottom: .8rem;
+}
+.step h4 { font-size: .95rem; margin-bottom: .4rem; }
+.step p  { font-size: .83rem; color: var(--muted); line-height: 1.5; }
+{% endblock %}
+
+{% block content %}
+<div class="hero">
+  <h2>Covered Call Opportunity Finder</h2>
+  <p>Connect your Charles Schwab accounts via the official OAuth 2.0 API to see which stock positions support covered call sales — safely and securely.</p>
+
+  {% if authenticated %}
+    <a href="/dashboard" class="btn btn-primary" style="margin-right:.6rem">Go to Dashboard →</a>
+    <a href="/logout"    class="btn btn-secondary">Disconnect</a>
+  {% else %}
+    <a href="/login" class="btn btn-primary">Connect Schwab Account →</a>
+  {% endif %}
+</div>
+
+<div class="steps">
+  <div class="step">
+    <div class="step-num">1</div>
+    <h4>Set Credentials</h4>
+    <p>Add your Schwab Developer API keys to the <code>.env</code> file. No passwords stored.</p>
+  </div>
+  <div class="step">
+    <div class="step-num">2</div>
+    <h4>Authenticate</h4>
+    <p>Click "Connect" to authorise via Schwab's official OAuth 2.0 flow. Tokens are stored locally.</p>
+  </div>
+  <div class="step">
+    <div class="step-num">3</div>
+    <h4>View Dashboard</h4>
+    <p>See all your accounts, stock positions, and exactly how many covered calls you can sell today.</p>
+  </div>
+  <div class="step">
+    <div class="step-num">4</div>
+    <h4>Export</h4>
+    <p>Download results as CSV for your records or further analysis in Excel.</p>
+  </div>
+</div>
+
+<div class="card" style="margin-top:2rem; font-size:.85rem; color:var(--muted);">
+  <strong>Security notice:</strong> This application never stores your Schwab username or password. It only uses OAuth 2.0 tokens to read account positions. No trades are placed.
+</div>
+{% endblock %}

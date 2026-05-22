@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}Stock Universe – Schwab Covered Calls{% endblock %}
+
+{% block extra_style %}
+.meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.4rem;
+}
+.meta-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.2rem;
+}
+.meta-card .label { font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.meta-card .value { font-size: 1.35rem; font-weight: 700; color: var(--schwab-blue); margin-top: .2rem; }
+.ticker-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .3rem;
+  margin-top: 1rem;
+}
+.ticker-pill {
+  background: #f0f4fa;
+  color: var(--schwab-blue);
+  padding: .2rem .5rem;
+  border-radius: 4px;
+  font-size: .78rem;
+  font-weight: 600;
+  font-family: monospace;
+}
+{% endblock %}
+
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1.5rem;">
+  <h2 style="font-size:1.4rem;color:var(--schwab-blue);">📋 Stock Universe — S&P 500 + Nasdaq 100</h2>
+  <div>
+    <a href="/momentum" class="btn btn-secondary">← Momentum</a>
+    <form method="POST" action="/universe/refresh" style="display:inline;">
+      <button type="submit" class="btn btn-primary">🔄 Refresh from Wikipedia Now</button>
+    </form>
+  </div>
+</div>
+
+{% if just_refreshed %}
+<div style="background:#f0faf4;border:1px solid #a8d5b5;border-radius:8px;padding:.8rem 1.2rem;margin-bottom:1rem;color:#1a6b35;font-size:.88rem;">
+  ✅ Universe refreshed successfully from Wikipedia — {{ meta.count }} tickers loaded.
+</div>
+{% endif %}
+
+{% if meta.errors %}
+<div style="background:#fff8e1;border:1px solid #ffe082;border-radius:8px;padding:.8rem 1.2rem;margin-bottom:1rem;font-size:.83rem;color:var(--warn);">
+  <strong>⚠ Partial refresh:</strong>
+  {% for e in meta.errors %}<div>{{ e }}</div>{% endfor %}
+  <div style="margin-top:.4rem;">Hardcoded baseline was used to supplement missing data.</div>
+</div>
+{% endif %}
+
+<div class="meta-grid">
+  <div class="meta-card">
+    <div class="label">Total Tickers</div>
+    <div class="value">{{ meta.count }}</div>
+  </div>
+  <div class="meta-card">
+    <div class="label">Source</div>
+    <div class="value" style="font-size:1rem;padding-top:.3rem;">{{ meta.source }}</div>
+  </div>
+  <div class="meta-card">
+    <div class="label">Last Updated</div>
+    <div class="value" style="font-size:.85rem;padding-top:.3rem;">{{ meta.updated[:19] if meta.updated else '—' }}</div>
+  </div>
+  <div class="meta-card">
+    <div class="label">Next Refresh</div>
+    <div class="value" style="font-size:1rem;padding-top:.3rem;">{{ meta.next_refresh }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.6rem;">
+    <strong>All tickers in universe ({{ tickers|length }})</strong>
+    <input type="text" id="tickerSearch" placeholder="filter…" oninput="filterTickers()"
+           style="padding:.3rem .6rem;border:1px solid var(--border);border-radius:4px;font-size:.82rem;width:140px;">
+  </div>
+  <div class="ticker-grid" id="tickerGrid">
+    {% for t in tickers %}
+      <span class="ticker-pill">{{ t }}</span>
+    {% endfor %}
+  </div>
+</div>
+
+<div style="font-size:.8rem;color:var(--muted);margin-top:.8rem;">
+  The universe is refreshed automatically once a month. Click "Refresh from Wikipedia Now" to force an immediate update.
+  If Wikipedia is unavailable, the built-in baseline (~580 tickers) is used automatically.
+</div>
+
+<script>
+function filterTickers() {
+  const q = document.getElementById("tickerSearch").value.toLowerCase();
+  document.querySelectorAll("#tickerGrid .ticker-pill").forEach(el => {
+    el.style.display = el.textContent.toLowerCase().includes(q) ? "" : "none";
+  });
+}
+</script>
+{% endblock %}
