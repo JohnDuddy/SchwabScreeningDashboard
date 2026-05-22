@@ -16,6 +16,7 @@ CACHE_FILES = {
     "momentum":  ".cache_momentum.json",
     "dashboard": ".cache_dashboard.json",
     "options":   ".cache_options.json",
+    "risk":      ".cache_risk.json",
 }
 
 

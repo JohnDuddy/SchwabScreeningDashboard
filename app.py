@@ -861,6 +861,56 @@ _csp_state = {
 }
 _csp_lock = threading.Lock()
 
+_risk_state = {
+    "results": None,   # output of analyze_portfolio_risk()
+    "kelly":   None,   # output of kelly_allocation()
+    "capital": 100000, # default capital
+    "completed": None,
+}
+_risk_lock = threading.Lock()
+
+_journal_state = {
+    "trades":    None,
+    "stats":     None,
+    "completed": None,
+}
+_journal_lock = threading.Lock()
+
+
+def _compute_risk(capital=None):
+    """Compute risk metrics from current CSP results and cache them."""
+    from cspscreener.risk import analyze_portfolio_risk, kelly_allocation
+
+    with _csp_lock:
+        rows = _csp_state.get("results") or []
+
+    with _risk_lock:
+        if capital is not None:
+            _risk_state["capital"] = capital
+        total_capital = _risk_state["capital"]
+
+    risk = analyze_portfolio_risk(rows, total_capital)
+    kelly = kelly_allocation(rows, total_capital) if rows else []
+
+    with _risk_lock:
+        _risk_state["results"]   = risk
+        _risk_state["kelly"]     = kelly
+        _risk_state["completed"] = datetime.now()
+
+    from scan_cache import save_scan
+    save_scan("risk", {"risk": risk, "kelly": kelly, "capital": total_capital})
+
+
+def _refresh_journal():
+    """Load journal data from disk into the in-memory state dict."""
+    import journal
+    trades = journal.get_all_trades()
+    stats = journal.get_stats()
+    with _journal_lock:
+        _journal_state["trades"]    = trades
+        _journal_state["stats"]     = stats
+        _journal_state["completed"] = datetime.now()
+
 
 def _run_dashboard_background():
     """Background thread to fetch covered-call positions."""
@@ -1044,6 +1094,12 @@ def _run_csp_background():
             "vix_regime": vix_regime,
         })
 
+        # Recompute risk from fresh CSP data
+        try:
+            _compute_risk()
+        except Exception as re:
+            logger.warning("Risk recompute after CSP scan failed: %s", re)
+
     except Exception as e:
         logger.exception("CSP scan failed: %s", e)
         with _csp_lock:
@@ -1163,10 +1219,17 @@ def csp_compare():
 @app.route("/journal")
 def journal_page():
     """Display trade journal."""
-    import journal
-    trades = journal.get_all_trades()
-    stats = journal.get_stats()
-    return render_template("journal.html", trades=trades, stats=stats)
+    with _journal_lock:
+        trades = _journal_state["trades"]
+        stats = _journal_state["stats"]
+
+    # Fallback if not yet pre-loaded
+    if trades is None:
+        import journal
+        trades = journal.get_all_trades()
+        stats = journal.get_stats()
+
+    return render_template("journal.html", trades=trades, stats=stats or {})
 
 
 @app.route("/journal/add", methods=["POST"])
@@ -1181,6 +1244,7 @@ def journal_add():
         "contracts": request.form.get("contracts", 1),
         "notes": request.form.get("notes", ""),
     })
+    _refresh_journal()
     return redirect(url_for("journal_page"))
 
 
@@ -1192,6 +1256,7 @@ def journal_close(trade_id):
         "close_premium": request.form.get("close_premium", 0),
         "close_reason": request.form.get("close_reason", "expired"),
     })
+    _refresh_journal()
     return redirect(url_for("journal_page"))
 
 
@@ -1200,25 +1265,38 @@ def journal_close(trade_id):
 @app.route("/risk")
 def risk_page():
     """Portfolio risk analysis for CSP candidates."""
-    from cspscreener.risk import analyze_portfolio_risk, kelly_allocation
+    capital = request.args.get("capital", None)
 
-    capital = request.args.get("capital", "100000")
-    try:
-        total_capital = float(capital.replace(",", ""))
-    except (ValueError, TypeError):
-        total_capital = 100000.0
+    if capital is not None:
+        # User changed capital — recompute on the fly
+        try:
+            total_capital = float(capital.replace(",", ""))
+        except (ValueError, TypeError):
+            total_capital = 100000.0
+        _compute_risk(capital=total_capital)
+    else:
+        with _risk_lock:
+            total_capital = _risk_state["capital"]
+
+    with _risk_lock:
+        risk = _risk_state["results"]
+        kelly = _risk_state["kelly"]
 
     with _csp_lock:
-        rows = _csp_state.get("results") or []
         vix_level = _csp_state.get("vix_level")
         vix_regime = _csp_state.get("vix_regime")
 
-    risk = analyze_portfolio_risk(rows, total_capital)
-    kelly = kelly_allocation(rows, total_capital) if rows else []
+    # If no cached risk yet, compute fresh
+    if risk is None:
+        from cspscreener.risk import analyze_portfolio_risk, kelly_allocation
+        with _csp_lock:
+            rows = _csp_state.get("results") or []
+        risk = analyze_portfolio_risk(rows, total_capital)
+        kelly = kelly_allocation(rows, total_capital) if rows else []
 
     return render_template(
         "risk.html",
-        risk=risk, kelly=kelly,
+        risk=risk, kelly=kelly or [],
         capital=int(total_capital),
         vix_level=vix_level, vix_regime=vix_regime,
     )
@@ -1415,6 +1493,32 @@ def _startup_scans():
             _opts_state["errors"]    = cached_opts["data"].get("errors", [])
             _opts_state["completed"] = datetime.fromisoformat(cached_opts["timestamp"])
         logger.info("Loaded cached options results (%d rows)", len(cached_opts["data"]["rows"]))
+
+    # Pre-compute risk from cached CSP data
+    if cached_csp:
+        try:
+            cached_risk = load_scan("risk")
+            if cached_risk:
+                with _risk_lock:
+                    _risk_state["results"]   = cached_risk["data"]["risk"]
+                    _risk_state["kelly"]     = cached_risk["data"]["kelly"]
+                    _risk_state["capital"]   = cached_risk["data"].get("capital", 100000)
+                    _risk_state["completed"] = datetime.fromisoformat(cached_risk["timestamp"])
+                logger.info("Loaded cached risk results")
+            else:
+                _compute_risk()
+                logger.info("Computed risk from cached CSP data")
+        except Exception as e:
+            logger.warning("Risk pre-compute failed: %s", e)
+
+    # Pre-load journal from disk
+    try:
+        _refresh_journal()
+        with _journal_lock:
+            count = len(_journal_state["trades"]) if _journal_state["trades"] else 0
+        logger.info("Pre-loaded journal (%d trades)", count)
+    except Exception as e:
+        logger.warning("Journal pre-load failed: %s", e)
 
     # 2. Start fresh scans in background threads
     # Dashboard + Options: only if Schwab token available
