@@ -1,6 +1,7 @@
-"""Quick test scan — runs the badass screener on 20 tickers and writes the cache."""
+"""Quick test scan — run badass screener on 20 representative tickers and cache results."""
 import sys, os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(__file__))
+os.chdir(os.path.dirname(__file__))
 
 import badass_screener as bs
 from momentum import fetch_history
@@ -16,7 +17,7 @@ TEST_TICKERS = [
 print(f"Quick test scan on {len(TEST_TICKERS)} tickers...")
 
 def cb(i, total, ticker):
-    print(f"  [{i}/{total}] {ticker}")
+    print(f"  [{i}/{total}] {ticker}", end="\r", flush=True)
 
 rows, red_flag = bs.run_badass_screen(
     TEST_TICKERS,
@@ -27,8 +28,8 @@ rows, red_flag = bs.run_badass_screen(
 )
 
 print(f"\nDone! {len(rows)} stocks scored.")
-print(f"Red flag: {red_flag['regime']} | SPY={red_flag['spy_price']} MA200={red_flag['ma200']} ({red_flag['pct_diff']}%)")
-print()
+print(f"Red flag: {red_flag['regime']} (SPY {red_flag['spy_price']} vs MA200 {red_flag['ma200']}, {red_flag['pct_diff']}%)")
+print("\nTop 10 results:")
 for r in rows[:10]:
     print(f"  #{r['rank']:2d} {r['ticker']:<6} {r['action']:<12} score={r['composite_score']:.1f}")
 
