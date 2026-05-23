@@ -12,11 +12,12 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 CACHE_FILES = {
-    "csp":       ".cache_csp.json",
-    "momentum":  ".cache_momentum.json",
-    "dashboard": ".cache_dashboard.json",
-    "options":   ".cache_options.json",
-    "risk":      ".cache_risk.json",
+    "csp":        ".cache_csp.json",
+    "momentum":   ".cache_momentum.json",
+    "momentum2":  ".cache_momentum2.json",
+    "dashboard":  ".cache_dashboard.json",
+    "options":    ".cache_options.json",
+    "risk":       ".cache_risk.json",
 }
 
 

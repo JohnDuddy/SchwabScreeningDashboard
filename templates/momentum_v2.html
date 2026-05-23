@@ -1,0 +1,383 @@
+{% extends "base.html" %}
+
+{% block title %}Momentum Pro — Schwab Dashboard{% endblock %}
+
+{% block extra_style %}
+.regime-banner {
+  border-radius: 8px;
+  padding: 1rem 1.6rem;
+  margin-bottom: 1.4rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+  font-size: 1rem;
+}
+.regime-green {
+  background: #e6f9ee;
+  border: 2px solid var(--accent);
+  color: #1a6b3a;
+}
+.regime-red {
+  background: #fdecea;
+  border: 2px solid var(--danger);
+  color: #8b1a1a;
+}
+.regime-icon { font-size: 1.5rem; margin-right: .6rem; }
+.regime-detail { font-size: .85rem; font-weight: 400; margin-top: .2rem; color: inherit; opacity: .8; }
+.regime-badge {
+  font-size: .8rem;
+  padding: .3rem .8rem;
+  border-radius: 20px;
+  font-weight: 700;
+  letter-spacing: .04em;
+}
+.regime-badge-green { background: var(--accent); color: #fff; }
+.regime-badge-red   { background: var(--danger); color: #fff; }
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.4rem;
+}
+.metric-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.2rem;
+  text-align: center;
+}
+.metric-card .val { font-size: 1.8rem; font-weight: 700; color: var(--schwab-blue); }
+.metric-card .lbl { font-size: .78rem; color: var(--muted); margin-top: .2rem; }
+
+.controls { display: flex; gap: .7rem; align-items: center; flex-wrap: wrap; margin-bottom: 1.2rem; }
+
+#progress-wrap { display: none; margin-bottom: 1rem; }
+.progress-bar-outer { background: #e8edf3; border-radius: 4px; height: 8px; overflow: hidden; }
+.progress-bar-inner { height: 100%; background: var(--schwab-light); transition: width .3s; }
+.progress-text { font-size: .82rem; color: var(--muted); margin-top: .3rem; }
+
+table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+th {
+  background: var(--schwab-blue);
+  color: #fff;
+  padding: .55rem .6rem;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+th:hover { background: var(--schwab-light); }
+td { padding: .45rem .6rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
+tr:hover td { background: #f0f4f8; }
+
+.score-pill {
+  display: inline-block;
+  border-radius: 12px;
+  padding: .18rem .6rem;
+  font-weight: 700;
+  font-size: .8rem;
+  min-width: 2.8rem;
+  text-align: center;
+}
+.score-strong   { background: #cef0d8; color: #1a6b3a; }
+.score-moderate { background: #d6eaff; color: #1a4a80; }
+.score-weak     { background: #fff3d6; color: #7a5000; }
+.score-none     { background: #f0f0f0; color: #666; }
+
+.pct-bar-wrap { display: flex; align-items: center; gap: .4rem; }
+.pct-mini { background: #e8edf3; border-radius: 3px; height: 6px; width: 50px; overflow: hidden; flex-shrink: 0; }
+.pct-mini-fill { height: 100%; background: var(--schwab-light); }
+.pct-num { font-size: .78rem; color: var(--text); min-width: 26px; text-align: right; }
+
+.flag-yes { color: var(--accent); font-weight: 700; }
+.flag-no  { color: var(--muted); }
+
+.table-wrap { overflow-x: auto; }
+{% endblock %}
+
+{% block content %}
+<h2 style="margin-bottom:1rem;">⚡ Momentum Pro — 9-Factor Screener</h2>
+
+<!-- ── Market Regime Banner ─────────────────────────────────────── -->
+{% if regime %}
+  {% if regime.red_flag %}
+  <div class="regime-banner regime-red">
+    <div>
+      <span class="regime-icon">🚩</span>
+      <strong>RED FLAG — Bear Market Regime Active</strong>
+      <div class="regime-detail">
+        SPY ({{ regime.spy_price }}) is <strong>{{ regime.pct_from_ma200 | abs }}%</strong>
+        below its 200-day MA ({{ regime.ma200 }}).
+        Momentum strategies historically underperform in this regime.
+        All composite scores reduced by 35%.
+      </div>
+    </div>
+    <span class="regime-badge regime-badge-red">RED FLAG</span>
+  </div>
+  {% else %}
+  <div class="regime-banner regime-green">
+    <div>
+      <span class="regime-icon">✅</span>
+      <strong>Market Regime: Uptrend — Momentum Strategies Favored</strong>
+      <div class="regime-detail">
+        SPY ({{ regime.spy_price }}) is <strong>{{ regime.pct_from_ma200 }}%</strong>
+        above its 200-day MA ({{ regime.ma200 }}).
+        No score penalty applied.
+      </div>
+    </div>
+    <span class="regime-badge regime-badge-green">UPTREND</span>
+  </div>
+  {% endif %}
+{% endif %}
+
+<!-- ── Controls ─────────────────────────────────────────────────── -->
+<div class="controls">
+  <a href="/dashboard" class="btn btn-secondary">← Covered Calls</a>
+  <a href="/momentum"  class="btn btn-secondary">Momentum (Classic)</a>
+  {% if rows %}
+  <a href="/momentum2/export/csv" class="btn btn-secondary">⬇ Export CSV</a>
+  {% endif %}
+  <button id="scan-btn" class="btn btn-primary" onclick="startScan()">▶ Run Scan</button>
+  {% if summary.completed %}
+  <span style="font-size:.8rem;color:var(--muted);">Last scan: {{ summary.completed }}</span>
+  {% endif %}
+</div>
+
+{% if error %}
+<div class="card" style="background:#fdecea;border-color:var(--danger);">
+  <strong>Scan error:</strong> {{ error }}
+</div>
+{% endif %}
+
+<!-- ── Progress bar ──────────────────────────────────────────────── -->
+<div id="progress-wrap">
+  <div class="progress-bar-outer">
+    <div class="progress-bar-inner" id="progress-bar" style="width:0%"></div>
+  </div>
+  <div class="progress-text" id="progress-text">Starting scan…</div>
+</div>
+
+<!-- ── Summary metrics ──────────────────────────────────────────── -->
+{% if summary and summary.total_scanned %}
+<div class="summary-grid">
+  <div class="metric-card">
+    <div class="val">{{ summary.total_scanned }}</div>
+    <div class="lbl">Stocks Scanned</div>
+  </div>
+  <div class="metric-card">
+    <div class="val">{{ summary.strong_count }}</div>
+    <div class="lbl">Score ≥ 75</div>
+  </div>
+  <div class="metric-card">
+    <div class="val">{{ summary.moderate_count }}</div>
+    <div class="lbl">Score 55–75</div>
+  </div>
+  <div class="metric-card">
+    <div class="val">{{ summary.new_highs_count }}</div>
+    <div class="lbl">At 20-Day High</div>
+  </div>
+  <div class="metric-card">
+    <div class="val">{{ summary.red_flag_str }}</div>
+    <div class="lbl">Market Regime</div>
+  </div>
+</div>
+{% endif %}
+
+<!-- ── Main table ────────────────────────────────────────────────── -->
+{% if rows %}
+<div class="card" style="padding:1rem;">
+  <div class="table-wrap">
+    <table id="main-table">
+      <thead>
+        <tr>
+          <th onclick="sortTable(0)">#</th>
+          <th onclick="sortTable(1)">Ticker</th>
+          <th onclick="sortTable(2)">Price</th>
+          <th onclick="sortTable(3)" title="Composite score (0-100)">Score</th>
+          <th onclick="sortTable(4)"  title="52-Week High Proximity (22%)">52W Hi %</th>
+          <th onclick="sortTable(5)"  title="3-Month Return (18%)">3M Ret</th>
+          <th onclick="sortTable(6)"  title="New 20/50-Day Highs (12%)">New Hi</th>
+          <th onclick="sortTable(7)"  title="Volume Surge, price-confirmed (12%)">Vol Surge</th>
+          <th onclick="sortTable(8)"  title="Above Rising 50-Day MA (10%)">MA50</th>
+          <th onclick="sortTable(9)"  title="Sector Relative Strength (8%)">Sec RS</th>
+          <th onclick="sortTable(10)" title="ROC Acceleration (8%)">ROC Accel</th>
+          <th onclick="sortTable(11)" title="Residual (beta-adjusted) Momentum (5%)">Resid</th>
+          <th onclick="sortTable(12)" title="Consistent weekly momentum (5%)">Consist</th>
+          <th onclick="sortTable(13)" title="Beta vs SPY">Beta</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        {% set score = r.composite_score %}
+        {% if score >= 75 %}
+          {% set pill_class = "score-strong" %}
+        {% elif score >= 55 %}
+          {% set pill_class = "score-moderate" %}
+        {% elif score >= 35 %}
+          {% set pill_class = "score-weak" %}
+        {% else %}
+          {% set pill_class = "score-none" %}
+        {% endif %}
+        <tr>
+          <td>{{ r.rank }}</td>
+          <td><strong>{{ r.ticker }}</strong></td>
+          <td>${{ "%.2f"|format(r.current_price) }}</td>
+          <td><span class="score-pill {{ pill_class }}">{{ score }}</span></td>
+          <!-- Factor percentile mini-bars -->
+          <td>
+            <div class="pct-bar-wrap">
+              <div class="pct-mini"><div class="pct-mini-fill" style="width:{{ r.pct_prox_52w }}%"></div></div>
+              <span class="pct-num">{{ r.pct_prox_52w | int }}</span>
+            </div>
+          </td>
+          <td>
+            <div class="pct-bar-wrap">
+              <div class="pct-mini"><div class="pct-mini-fill" style="width:{{ r.pct_ret_63 }}%"></div></div>
+              <span class="pct-num">{{ r.pct_ret_63 | int }}</span>
+            </div>
+          </td>
+          <td>
+            {% if r.new_50d_high %}
+              <span class="flag-yes">50d</span>
+            {% elif r.new_20d_high %}
+              <span class="flag-yes">20d</span>
+            {% else %}
+              <span class="flag-no">—</span>
+            {% endif %}
+          </td>
+          <td>
+            <div class="pct-bar-wrap">
+              <div class="pct-mini"><div class="pct-mini-fill" style="width:{{ r.pct_vol_surge }}%"></div></div>
+              <span class="pct-num">{{ r.pct_vol_surge | int }}</span>
+            </div>
+          </td>
+          <td>
+            {% if r.above_ma50 and r.ma50_rising %}
+              <span class="flag-yes">↑ Rising</span>
+            {% elif r.above_ma50 %}
+              <span style="color:var(--warn);font-weight:600;">Above</span>
+            {% else %}
+              <span class="flag-no">Below</span>
+            {% endif %}
+          </td>
+          <td>
+            <div class="pct-bar-wrap">
+              <div class="pct-mini"><div class="pct-mini-fill" style="width:{{ r.pct_sector_rs }}%"></div></div>
+              <span class="pct-num">{{ r.pct_sector_rs | int }}</span>
+            </div>
+          </td>
+          <td>
+            <div class="pct-bar-wrap">
+              <div class="pct-mini"><div class="pct-mini-fill" style="width:{{ r.pct_roc_accel }}%"></div></div>
+              <span class="pct-num">{{ r.pct_roc_accel | int }}</span>
+            </div>
+          </td>
+          <td>
+            <div class="pct-bar-wrap">
+              <div class="pct-mini"><div class="pct-mini-fill" style="width:{{ r.pct_residual }}%"></div></div>
+              <span class="pct-num">{{ r.pct_residual | int }}</span>
+            </div>
+          </td>
+          <td>
+            <div class="pct-bar-wrap">
+              <div class="pct-mini"><div class="pct-mini-fill" style="width:{{ r.pct_consistent }}%"></div></div>
+              <span class="pct-num">{{ r.pct_consistent | int }}</span>
+            </div>
+          </td>
+          <td style="color:var(--muted);">
+            {% if r.beta is not none and r.beta == r.beta %}
+              {{ "%.2f"|format(r.beta) }}
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p style="margin-top:.8rem;font-size:.78rem;color:var(--muted);">
+    Percentile bars show rank within today's universe (0=bottom, 100=top).
+    {% if regime and regime.red_flag %}
+    <strong style="color:var(--danger);">Scores reflect 35% Red Flag reduction.</strong>
+    {% endif %}
+  </p>
+</div>
+{% elif not running %}
+<div class="card" style="text-align:center;padding:3rem;">
+  <p style="color:var(--muted);margin-bottom:1rem;">No results yet. Click <strong>Run Scan</strong> to screen the S&P 500 + Nasdaq 100.</p>
+  <button class="btn btn-primary" onclick="startScan()">▶ Run Scan</button>
+</div>
+{% endif %}
+
+<script>
+const scanBtn = document.getElementById("scan-btn");
+const progressWrap = document.getElementById("progress-wrap");
+const progressBar  = document.getElementById("progress-bar");
+const progressText = document.getElementById("progress-text");
+let pollTimer = null;
+
+{% if running %}
+scanBtn.disabled = true;
+scanBtn.textContent = "Scanning…";
+progressWrap.style.display = "block";
+pollStatus();
+{% endif %}
+
+function startScan() {
+  fetch("/momentum2/start", { method: "POST" })
+    .then(r => r.json())
+    .then(() => {
+      scanBtn.disabled = true;
+      scanBtn.textContent = "Scanning…";
+      progressWrap.style.display = "block";
+      progressBar.style.width = "0%";
+      progressText.textContent = "Starting scan…";
+      pollStatus();
+    });
+}
+
+function pollStatus() {
+  if (pollTimer) clearTimeout(pollTimer);
+  fetch("/momentum2/status")
+    .then(r => r.json())
+    .then(d => {
+      if (d.running) {
+        const pct = d.total > 0 ? Math.round(d.progress / d.total * 100) : 0;
+        progressBar.style.width = pct + "%";
+        progressText.textContent = d.current
+          ? `Scanning ${d.current} (${d.progress}/${d.total})`
+          : "Starting…";
+        pollTimer = setTimeout(pollStatus, 1200);
+      } else {
+        progressBar.style.width = "100%";
+        if (d.error) {
+          progressText.textContent = "Error: " + d.error;
+        } else {
+          progressText.textContent = "Scan complete. Reloading…";
+          setTimeout(() => location.reload(), 800);
+        }
+      }
+    })
+    .catch(() => { pollTimer = setTimeout(pollStatus, 2000); });
+}
+
+// ── Client-side table sort ─────────────────────────────────────────
+let sortCol = 3, sortAsc = false;
+function sortTable(col) {
+  const tbody = document.querySelector("#main-table tbody");
+  const rows  = Array.from(tbody.querySelectorAll("tr"));
+  if (sortCol === col) { sortAsc = !sortAsc; } else { sortCol = col; sortAsc = false; }
+  rows.sort((a, b) => {
+    const va = cellVal(a, col), vb = cellVal(b, col);
+    return sortAsc ? (va > vb ? 1 : -1) : (va < vb ? 1 : -1);
+  });
+  rows.forEach(r => tbody.appendChild(r));
+}
+function cellVal(row, col) {
+  const cell = row.cells[col];
+  const n = parseFloat(cell.textContent);
+  return isNaN(n) ? cell.textContent.trim().toLowerCase() : n;
+}
+</script>
+{% endblock %}

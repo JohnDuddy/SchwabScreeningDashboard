@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 import threading
 import pandas as pd
 import momentum as mom
+import momentum_v2 as momv2
 
 load_dotenv()
 
@@ -1316,6 +1317,19 @@ _scan_state = {
 }
 _scan_lock = threading.Lock()
 
+_momv2_state = {
+    "running":   False,
+    "started":   None,
+    "completed": None,
+    "progress":  0,
+    "total":     0,
+    "current":   "",
+    "results":   None,
+    "regime":    None,
+    "error":     None,
+}
+_momv2_lock = threading.Lock()
+
 
 def _run_scan_background():
     """Background thread target for the momentum scan."""
@@ -1449,6 +1463,112 @@ def momentum_export_csv():
     )
 
 
+def _run_momv2_background():
+    """Background thread for the Momentum Pro (v2) scan."""
+    try:
+        symbols = mom.load_sp500_tickers()
+        with _momv2_lock:
+            _momv2_state["total"] = len(symbols)
+
+        def cb(i, total, ticker):
+            with _momv2_lock:
+                _momv2_state["progress"] = i
+                _momv2_state["current"]  = ticker
+
+        df, regime = momv2.run_screen_v2(symbols, progress_cb=cb)
+
+        with _momv2_lock:
+            _momv2_state["results"]   = df
+            _momv2_state["regime"]    = regime
+            _momv2_state["completed"] = datetime.now()
+
+        from scan_cache import save_scan
+        save_scan("momentum2", {
+            "records": df.to_dict("records"),
+            "columns": list(df.columns),
+            "regime":  regime,
+        })
+
+    except Exception as e:
+        logger.exception("Momentum Pro scan failed: %s", e)
+        with _momv2_lock:
+            _momv2_state["error"] = str(e)
+    finally:
+        with _momv2_lock:
+            _momv2_state["running"] = False
+
+
+@app.route("/momentum2")
+def momentum2_page():
+    """Momentum Pro screener page."""
+    with _momv2_lock:
+        running   = _momv2_state["running"]
+        completed = _momv2_state["completed"]
+        df        = _momv2_state["results"]
+        regime    = _momv2_state["regime"]
+        error     = _momv2_state["error"]
+
+    rows = []
+    summary = {}
+    if df is not None and not df.empty:
+        rows = df.head(100).to_dict("records")
+        summary = {
+            "total_scanned":  len(df),
+            "strong_count":   int((df["composite_score"] >= 75).sum()),
+            "moderate_count": int(((df["composite_score"] >= 55) & (df["composite_score"] < 75)).sum()),
+            "new_highs_count": int(df["new_20d_high"].sum()) if "new_20d_high" in df.columns else 0,
+            "red_flag_str":   "🚩 Red Flag" if (regime and regime.get("red_flag")) else "✅ Uptrend",
+            "completed":      completed.strftime("%Y-%m-%d %H:%M:%S") if completed else None,
+        }
+
+    return render_template(
+        "momentum_v2.html",
+        running=running, rows=rows, summary=summary,
+        regime=regime or {}, error=error,
+    )
+
+
+@app.route("/momentum2/start", methods=["POST"])
+def momentum2_start():
+    with _momv2_lock:
+        if _momv2_state["running"]:
+            return jsonify({"status": "already_running"})
+        _momv2_state.update({
+            "running": True, "started": datetime.now(),
+            "completed": None, "progress": 0, "total": 0,
+            "current": "", "results": None, "error": None,
+        })
+    threading.Thread(target=_run_momv2_background, daemon=True).start()
+    return jsonify({"status": "started"})
+
+
+@app.route("/momentum2/status")
+def momentum2_status():
+    with _momv2_lock:
+        return jsonify({
+            "running":   _momv2_state["running"],
+            "progress":  _momv2_state["progress"],
+            "total":     _momv2_state["total"],
+            "current":   _momv2_state["current"],
+            "completed": _momv2_state["completed"].isoformat() if _momv2_state["completed"] else None,
+            "error":     _momv2_state["error"],
+        })
+
+
+@app.route("/momentum2/export/csv")
+def momentum2_export_csv():
+    with _momv2_lock:
+        df = _momv2_state["results"]
+    if df is None or df.empty:
+        return "No results to export", 404
+    csv_data = df.to_csv(index=False)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Response(
+        csv_data, mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=momentum_pro_{ts}.csv"},
+    )
+
+
 def _startup_scans():
     """Load cached results, then start fresh background scans."""
     from scan_cache import load_scan
@@ -1475,6 +1595,19 @@ def _startup_scans():
             logger.info("Loaded cached momentum results (%d rows)", len(records))
         except Exception as e:
             logger.warning("Failed to restore momentum cache: %s", e)
+
+    cached_momv2 = load_scan("momentum2")
+    if cached_momv2:
+        try:
+            records = cached_momv2["data"]["records"]
+            df = pd.DataFrame(records)
+            with _momv2_lock:
+                _momv2_state["results"]   = df
+                _momv2_state["regime"]    = cached_momv2["data"].get("regime")
+                _momv2_state["completed"] = datetime.fromisoformat(cached_momv2["timestamp"])
+            logger.info("Loaded cached Momentum Pro results (%d rows)", len(records))
+        except Exception as e:
+            logger.warning("Failed to restore momentum2 cache: %s", e)
 
     cached_dash = load_scan("dashboard")
     if cached_dash:
@@ -1552,7 +1685,16 @@ def _startup_scans():
         _scan_state["current"] = ""
         _scan_state["error"] = None
     threading.Thread(target=_run_scan_background, daemon=True).start()
-    logger.info("Auto-started CSP + momentum scans")
+
+    with _momv2_lock:
+        _momv2_state["running"] = True
+        _momv2_state["started"] = datetime.now()
+        _momv2_state["progress"] = 0
+        _momv2_state["total"] = 0
+        _momv2_state["current"] = ""
+        _momv2_state["error"] = None
+    threading.Thread(target=_run_momv2_background, daemon=True).start()
+    logger.info("Auto-started CSP + momentum + momentum2 scans")
 
 
 if __name__ == "__main__":
