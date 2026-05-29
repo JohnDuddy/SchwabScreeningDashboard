@@ -459,22 +459,23 @@ def build_composite(df: pd.DataFrame) -> pd.DataFrame:
     score = (score - penalty).clip(0, 100)
     df["composite_score"] = score.round(1)
 
-    # Classification
-    def classify(row):
-        s = row["composite_score"]
-        # Hard requirements for "clear momentum"
-        clear = (
-            row["ret_63"] > 0 and row["ret_42"] > 0 and
-            (row["vs_spy_63"] or 0) > 0 and
-            row["reg_slope"] > 0 and (row["reg_tstat"] or 0) > 1.0 and
-            row["above_ma50"]
+    # Classification (vectorized)
+    clear = (
+        (df["ret_63"] > 0) &
+        (df["ret_42"] > 0) &
+        (df["vs_spy_63"].fillna(0) > 0) &
+        (df["reg_slope"] > 0) &
+        (df["reg_tstat"].fillna(0) > 1.0) &
+        df["above_ma50"]
+    )
+    s = df["composite_score"]
+    df["classification"] = np.where(
+        (s >= 80) & clear, "Strong",
+        np.where(
+            (s >= 65) & clear, "Moderate",
+            np.where(s >= 50, "Weak/Unconfirmed", "No Clear Momentum")
         )
-        if s >= 80 and clear: return "Strong"
-        if s >= 65 and clear: return "Moderate"
-        if s >= 50:           return "Weak/Unconfirmed"
-        return "No Clear Momentum"
-
-    df["classification"] = df.apply(classify, axis=1)
+    )
     df["rank"]           = df["composite_score"].rank(ascending=False, method="min").astype("Int64")
 
     return df.sort_values("composite_score", ascending=False).reset_index(drop=True)

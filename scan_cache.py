@@ -18,6 +18,8 @@ CACHE_FILES = {
     "dashboard":  ".cache_dashboard.json",
     "options":    ".cache_options.json",
     "risk":       ".cache_risk.json",
+    "zerodte":    ".cache_zerodte.json",
+    "expiring_options": ".cache_expiring_options.json",
 }
 
 
@@ -33,7 +35,7 @@ def save_scan(scan_type: str, data: dict) -> None:
             "data": data,
         }
         with open(filename, "w") as f:
-            json.dump(payload, f, indent=2, default=str)
+            json.dump(payload, f, default=str)
     except Exception as e:
         logger.warning("Failed to save %s cache: %s", scan_type, e)
 

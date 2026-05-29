@@ -11,6 +11,7 @@ import io
 import logging
 import re
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import wraps
 from urllib.parse import urlencode, urlparse, parse_qs
 
@@ -22,6 +23,7 @@ from flask import (
 )
 from dotenv import load_dotenv
 
+import time
 import threading
 import pandas as pd
 import momentum as mom
@@ -55,6 +57,10 @@ TOKEN_FILE        = os.environ.get("TOKEN_FILE", ".schwab_tokens.json")
 
 # ── Token helpers ───────────────────────────────────────────────────────────
 
+_token_cache: dict = {"access_token": None, "expires_at": 0.0}
+_token_lock = threading.Lock()
+
+
 def save_tokens(tokens: dict):
     with open(TOKEN_FILE, "w") as f:
         json.dump(tokens, f, indent=2)
@@ -69,12 +75,15 @@ def load_tokens() -> dict | None:
 
 
 def get_valid_token() -> str | None:
-    """Return a valid access token, refreshing if needed."""
+    """Return a valid access token, refreshing only when the cached one is near expiry."""
+    with _token_lock:
+        if _token_cache["access_token"] and time.time() < _token_cache["expires_at"] - 60:
+            return _token_cache["access_token"]
+
     tokens = load_tokens()
     if not tokens:
         return None
 
-    # Try to refresh using refresh token
     try:
         b64 = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode()).decode()
         resp = requests.post(
@@ -92,6 +101,9 @@ def get_valid_token() -> str | None:
         resp.raise_for_status()
         new_tokens = resp.json()
         save_tokens(new_tokens)
+        with _token_lock:
+            _token_cache["access_token"] = new_tokens["access_token"]
+            _token_cache["expires_at"] = time.time() + new_tokens.get("expires_in", 1800)
         return new_tokens["access_token"]
     except Exception as e:
         logger.warning("Token refresh failed: %s", e)
@@ -109,6 +121,29 @@ def schwab_get(path: str, token: str, params: dict = None) -> dict:
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def _fetch_all_accounts(token: str) -> tuple[list, list]:
+    """Fetch all account positions in parallel. Returns (accounts_data, errors)."""
+    acct_nums_resp = schwab_get("/accounts/accountNumbers", token)
+    hashes = [a.get("hashValue") for a in acct_nums_resp if a.get("hashValue")]
+
+    accounts_data = []
+    errors = []
+
+    def _fetch_one(h):
+        return schwab_get(f"/accounts/{h}", token, params={"fields": "positions"})
+
+    with ThreadPoolExecutor(max_workers=min(len(hashes), 4)) as pool:
+        futures = {pool.submit(_fetch_one, h): h for h in hashes}
+        for future in as_completed(futures):
+            h = futures[future]
+            try:
+                accounts_data.append(future.result())
+            except Exception as e:
+                errors.append(f"Account {h[:8]}…: {e}")
+
+    return accounts_data, errors
 
 
 
@@ -155,17 +190,29 @@ def fetch_underlying_quotes(symbols: list[str], token: str) -> dict[str, float]:
     if remaining:
         try:
             import yfinance as yf
-            for sym in remaining:
-                try:
-                    t = yf.Ticker(sym)
-                    info = t.fast_info if hasattr(t, "fast_info") else {}
-                    last = getattr(info, "last_price", None) or getattr(info, "previous_close", None)
-                    if last and last > 0:
-                        prices[sym.upper()] = round(float(last), 2)
-                except Exception:
-                    pass
+            raw = yf.download(remaining, period="5d", progress=False, auto_adjust=False)
+            if not raw.empty:
+                if isinstance(raw.columns, pd.MultiIndex):
+                    close_df = raw["Close"] if "Close" in raw.columns.get_level_values(0) else pd.DataFrame()
+                    for sym in remaining:
+                        col = sym.upper()
+                        if col in close_df.columns:
+                            series = close_df[col].dropna()
+                            if not series.empty:
+                                last = float(series.iloc[-1])
+                                if last > 0:
+                                    prices[col] = round(last, 2)
+                else:
+                    # single-ticker download returns flat columns
+                    close_series = raw["Close"].dropna() if "Close" in raw.columns else pd.Series(dtype=float)
+                    if not close_series.empty:
+                        last = float(close_series.iloc[-1])
+                        if last > 0:
+                            prices[remaining[0].upper()] = round(last, 2)
         except ImportError:
             logger.warning("yfinance not installed — cannot fetch fallback quotes")
+        except Exception as e:
+            logger.warning("yfinance batch fallback failed: %s", e)
 
     return prices
 
@@ -523,23 +570,18 @@ def dashboard():
 
 @app.route("/export/csv")
 def export_csv():
-    token = get_valid_token()
-    if not token:
-        return redirect(url_for("login"))
+    with _dash_lock:
+        rows = _dash_state.get("results")
 
-    try:
-        acct_nums_resp = schwab_get("/accounts/accountNumbers", token)
-        hashes = [a.get("hashValue") for a in acct_nums_resp if a.get("hashValue")]
-        accounts_data = []
-        for h in hashes:
-            try:
-                data = schwab_get(f"/accounts/{h}", token, params={"fields": "positions"})
-                accounts_data.append(data)
-            except Exception:
-                pass
-        rows = parse_positions(accounts_data, show_full_account=False)
-    except Exception as e:
-        return f"Export failed: {e}", 500
+    if rows is None:
+        token = get_valid_token()
+        if not token:
+            return redirect(url_for("login"))
+        try:
+            accounts_data, _ = _fetch_all_accounts(token)
+            rows = parse_positions(accounts_data, show_full_account=False)
+        except Exception as e:
+            return f"Export failed: {e}", 500
 
     output = io.StringIO()
     fieldnames = [
@@ -562,21 +604,18 @@ def export_csv():
 @app.route("/api/data")
 def api_data():
     """JSON endpoint for in-page refresh."""
+    with _dash_lock:
+        rows = _dash_state.get("results")
+
+    if rows is not None:
+        return jsonify(rows)
+
     token = get_valid_token()
     if not token:
         return jsonify({"error": "not_authenticated"}), 401
     try:
-        acct_nums_resp = schwab_get("/accounts/accountNumbers", token)
-        hashes = [a.get("hashValue") for a in acct_nums_resp if a.get("hashValue")]
-        accounts_data = []
-        for h in hashes:
-            try:
-                data = schwab_get(f"/accounts/{h}", token, params={"fields": "positions"})
-                accounts_data.append(data)
-            except Exception:
-                pass
-        rows = parse_positions(accounts_data)
-        return jsonify(rows)
+        accounts_data, _ = _fetch_all_accounts(token)
+        return jsonify(parse_positions(accounts_data))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -796,26 +835,22 @@ def options_page():
 
 @app.route("/options/export/csv")
 def options_export_csv():
-    token = get_valid_token()
-    if not token:
-        return redirect(url_for("login"))
-    try:
-        acct_nums_resp = schwab_get("/accounts/accountNumbers", token)
-        hashes = [a.get("hashValue") for a in acct_nums_resp if a.get("hashValue")]
-        accounts_data = []
-        for h in hashes:
-            try:
-                data = schwab_get(f"/accounts/{h}", token, params={"fields": "positions"})
-                accounts_data.append(data)
-            except Exception:
-                pass
-        rows = parse_option_positions(accounts_data)
-        underlying_tickers = list(set(r["underlying"] for r in rows if r["underlying"]))
-        live_prices = fetch_underlying_quotes(underlying_tickers, token)
-        for r in rows:
-            r["current_price"] = live_prices.get(r["underlying"], 0)
-    except Exception as e:
-        return f"Export failed: {e}", 500
+    with _opts_lock:
+        rows = list(_opts_state.get("results") or [])
+
+    if not rows:
+        token = get_valid_token()
+        if not token:
+            return redirect(url_for("login"))
+        try:
+            accounts_data, _ = _fetch_all_accounts(token)
+            rows = parse_option_positions(accounts_data)
+            underlying_tickers = list(set(r["underlying"] for r in rows if r["underlying"]))
+            live_prices = fetch_underlying_quotes(underlying_tickers, token)
+            for r in rows:
+                r["current_price"] = live_prices.get(r["underlying"], 0)
+        except Exception as e:
+            return f"Export failed: {e}", 500
 
     output = io.StringIO()
     fieldnames = [
@@ -921,17 +956,7 @@ def _run_dashboard_background():
             logger.info("Dashboard scan skipped — no valid Schwab token")
             return
 
-        errors = []
-        accounts_data = []
-        acct_nums_resp = schwab_get("/accounts/accountNumbers", token)
-        hashes = [a.get("hashValue") for a in acct_nums_resp if a.get("hashValue")]
-
-        for h in hashes:
-            try:
-                data = schwab_get(f"/accounts/{h}", token, params={"fields": "positions"})
-                accounts_data.append(data)
-            except Exception as e:
-                errors.append(f"Account {h[:8]}…: {e}")
+        accounts_data, errors = _fetch_all_accounts(token)
 
         rows = parse_positions(accounts_data, show_full_account=False)
 
@@ -970,17 +995,7 @@ def _run_options_background():
             logger.info("Options scan skipped — no valid Schwab token")
             return
 
-        errors = []
-        accounts_data = []
-        acct_nums_resp = schwab_get("/accounts/accountNumbers", token)
-        hashes = [a.get("hashValue") for a in acct_nums_resp if a.get("hashValue")]
-
-        for h in hashes:
-            try:
-                data = schwab_get(f"/accounts/{h}", token, params={"fields": "positions"})
-                accounts_data.append(data)
-            except Exception as e:
-                errors.append(f"Account {h[:8]}…: {e}")
+        accounts_data, errors = _fetch_all_accounts(token)
 
         rows = parse_option_positions(accounts_data, show_full_account=False)
 
@@ -1067,9 +1082,6 @@ def _run_csp_background():
             elif reason:
                 tag = reason.split("[")[0]
                 rejections[tag] = rejections.get(tag, 0) + 1
-
-            import time
-            time.sleep(0.02)
 
         # Rank
         candidates.sort(key=lambda c: c.composite_score, reverse=True)
@@ -1330,6 +1342,41 @@ _momv2_state = {
 }
 _momv2_lock = threading.Lock()
 
+_zerodte_state = {
+    "running":   False,
+    "started":   None,
+    "completed": None,
+    "progress":  0,
+    "total":     0,
+    "current":   "",
+    "results":   None,
+    "summary":   None,
+    "error":     None,
+    "enabled":   True,
+}
+_zerodte_lock = threading.Lock()
+
+_expiring_state = {
+    "running": False,
+    "started": None,
+    "completed": None,
+    "progress": 0,
+    "total": 0,
+    "current": "",
+    "rows_by_level": {"5": [], "10": [], "15": []},
+    "all_rows": [],
+    "chain_rows": [],
+    "summary": {},
+    "errors": [],
+    "error": None,
+    "filters": {},
+    "sort_by": "midpoint_premium_yield_on_strike",
+    "mode": "live",
+    "expiration_mode": "next",
+    "selected_scan_date": None,
+}
+_expiring_lock = threading.Lock()
+
 
 def _run_scan_background():
     """Background thread target for the momentum scan."""
@@ -1498,6 +1545,76 @@ def _run_momv2_background():
             _momv2_state["running"] = False
 
 
+def _run_zerodte_background():
+    """Background thread: fetch 0DTE options chains and detect pricing anomalies."""
+    try:
+        from zerodte import config as zdt_cfg, schwab_client, anomaly_engine
+        import time
+        from datetime import date as _date
+
+        token = get_valid_token()
+        if not token:
+            logger.info("0DTE scan skipped — no valid Schwab token")
+            return
+
+        today    = _date.today()
+        universe = zdt_cfg.SCAN_UNIVERSE
+
+        with _zerodte_lock:
+            _zerodte_state["total"] = len(universe)
+
+        all_anomalies: list[dict] = []
+
+        for i, ticker in enumerate(universe, 1):
+            with _zerodte_lock:
+                _zerodte_state["progress"] = i
+                _zerodte_state["current"]  = ticker
+
+            chain = schwab_client.fetch_options_chain(ticker, token, today)
+            if chain:
+                anomalies = anomaly_engine.detect_anomalies(chain)
+                all_anomalies.extend(anomalies)
+
+            time.sleep(zdt_cfg.REQUEST_DELAY_SECONDS)
+
+        # Sort by score and add rank
+        all_anomalies.sort(key=lambda x: x["anomaly_score"], reverse=True)
+        for rank, a in enumerate(all_anomalies, 1):
+            a["rank"] = rank
+
+        tickers_with_anomalies = len(set(a["underlying"] for a in all_anomalies))
+        summary = {
+            "tickers_scanned":          len(universe),
+            "tickers_with_anomalies":   tickers_with_anomalies,
+            "total_anomalies":          len(all_anomalies),
+            "parity_count":  sum(1 for a in all_anomalies if "PARITY" in a["flags"]),
+            "stale_count":   sum(1 for a in all_anomalies if "STALE" in a["flags"]),
+            "iv_count":      sum(1 for a in all_anomalies if "HIGH_IV" in a["flags"] or "LOW_IV" in a["flags"]),
+            "spread_count":  sum(1 for a in all_anomalies if "WIDE_SPREAD" in a["flags"]),
+            "volume_count":  sum(1 for a in all_anomalies if "UNUSUAL_VOLUME" in a["flags"]),
+            "scan_date":     today.strftime("%Y-%m-%d"),
+            "timestamp":     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+        with _zerodte_lock:
+            _zerodte_state["results"]   = all_anomalies
+            _zerodte_state["summary"]   = summary
+            _zerodte_state["completed"] = datetime.now()
+            _zerodte_state["error"]     = None
+
+        from scan_cache import save_scan
+        save_scan("zerodte", {"rows": all_anomalies, "summary": summary})
+        logger.info("0DTE scan complete: %d anomalies across %d tickers", len(all_anomalies), tickers_with_anomalies)
+
+    except Exception as e:
+        logger.exception("0DTE scan failed: %s", e)
+        with _zerodte_lock:
+            _zerodte_state["error"] = str(e)
+    finally:
+        with _zerodte_lock:
+            _zerodte_state["running"] = False
+
+
 @app.route("/momentum2")
 def momentum2_page():
     """Momentum Pro screener page."""
@@ -1569,6 +1686,395 @@ def momentum2_export_csv():
     )
 
 
+
+# ---- Expiration-day put scanner routes ----
+
+def _expiring_bool_arg(args, name: str, default: bool) -> bool:
+    if name in args:
+        values = args.getlist(name) if hasattr(args, "getlist") else [args.get(name)]
+        return str(values[-1]).lower() in {"1", "true", "yes", "on"}
+    return default
+
+
+def _expiring_float_arg(args, name: str, default=None):
+    value = args.get(name)
+    if value in (None, ""):
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+def _expiring_int_arg(args, name: str, default: int = 0) -> int:
+    value = _expiring_float_arg(args, name, default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+
+def _expiring_scan_date_from_args(args):
+    from datetime import date as _date, datetime as _dt
+    from expiring_options.scanner import next_standard_expiration
+    expiration_mode = args.get("expiration_mode", "next")
+    custom_date = args.get("expiration_date", "")
+    if expiration_mode == "today":
+        return _date.today()
+    if expiration_mode == "custom" and custom_date:
+        try:
+            return _dt.strptime(custom_date, "%Y-%m-%d").date()
+        except ValueError:
+            return next_standard_expiration()
+    return next_standard_expiration()
+
+def _expiring_filters_from_args(args):
+    from expiring_options.scanner import ExpiringOptionFilters
+    return ExpiringOptionFilters(
+        min_bid_price=_expiring_float_arg(args, "min_bid_price", 0.01),
+        min_ask_price=_expiring_float_arg(args, "min_ask_price", 0.01),
+        min_midpoint_price=_expiring_float_arg(args, "min_midpoint_price", 0.01),
+        min_open_interest=_expiring_int_arg(args, "min_open_interest", 0),
+        min_volume=_expiring_int_arg(args, "min_volume", 0),
+        max_bid_ask_spread_percentage=_expiring_float_arg(args, "max_bid_ask_spread_percentage", 100.0),
+        max_absolute_delta=_expiring_float_arg(args, "max_absolute_delta", None),
+        min_distance_below_current_stock_price=_expiring_float_arg(args, "min_distance_below_current_stock_price", 0.0),
+        exclude_zero_bid=_expiring_bool_arg(args, "exclude_zero_bid", True),
+        exclude_missing_bid_ask=_expiring_bool_arg(args, "exclude_missing_bid_ask", True),
+        exclude_extremely_wide_spreads=_expiring_bool_arg(args, "exclude_extremely_wide_spreads", True),
+        exclude_earnings_today_or_next=_expiring_bool_arg(args, "exclude_earnings_today_or_next", False),
+        exclude_hard_to_borrow=_expiring_bool_arg(args, "exclude_hard_to_borrow", False),
+    )
+
+
+_universe_rows_cache: tuple | None = None
+_universe_rows_cache_lock = threading.Lock()
+
+
+def _expiring_universe_rows_and_meta() -> tuple[list[dict], dict]:
+    global _universe_rows_cache
+    with _universe_rows_cache_lock:
+        if _universe_rows_cache is not None:
+            return _universe_rows_cache
+
+    import universe as univ
+    tickers, meta = univ.load_universe()
+    names = fetch_company_names(tickers)
+    rows = []
+    seen = set()
+    for ticker in tickers:
+        symbol = clean_symbol(ticker).replace(".", "-")
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        rows.append({
+            "symbol": symbol,
+            "company_name": names.get(symbol, symbol),
+            "index_membership": "S&P 500 / Nasdaq 100",
+        })
+    meta = dict(meta or {})
+    meta["count"] = len(rows)
+    logger.info("Expiring Options All tickers universe count: %d", len(rows))
+    result = (rows, meta)
+    with _universe_rows_cache_lock:
+        _universe_rows_cache = result
+    return result
+
+
+def _expiring_symbol_rows() -> list[dict]:
+    rows, _meta = _expiring_universe_rows_and_meta()
+    return rows
+
+
+def _run_expiring_options_background(filters, sort_by: str, mode: str, scan_date):
+    try:
+        from pathlib import Path
+        from expiring_options import scanner
+        from scan_cache import save_scan
+
+        root = Path(__file__).resolve().parent
+
+        def progress(i: int, total: int, current: str) -> None:
+            with _expiring_lock:
+                _expiring_state["progress"] = i
+                _expiring_state["total"] = total
+                _expiring_state["current"] = current
+
+        if mode == "test":
+            payload = scanner.run_test_scan(root, filters, sort_by, progress=progress, scan_date=scan_date)
+        else:
+            token = get_valid_token()
+            if not token:
+                raise RuntimeError("Schwab authentication is required for live mode.")
+            symbol_rows, universe_meta = _expiring_universe_rows_and_meta()
+            with _expiring_lock:
+                _expiring_state["total"] = len(symbol_rows)
+            payload = scanner.run_live_scan(token, symbol_rows, filters, sort_by, progress=progress, scan_date=scan_date)
+            payload.setdefault("summary", {})["universe_source"] = universe_meta.get("source", "unknown")
+            payload.setdefault("summary", {})["universe_updated"] = universe_meta.get("updated", "")
+            payload.setdefault("summary", {})["universe_count"] = universe_meta.get("count", len(symbol_rows))
+
+        with _expiring_lock:
+            _expiring_state["rows_by_level"] = payload.get("rows_by_level", {"5": [], "10": [], "15": []})
+            _expiring_state["all_rows"] = payload.get("all_rows", [])
+            _expiring_state["chain_rows"] = payload.get("chain_rows", [])
+            _expiring_state["summary"] = payload.get("summary", {})
+            _expiring_state["errors"] = payload.get("errors", [])
+            _expiring_state["filters"] = payload.get("filters", filters.to_dict())
+            _expiring_state["sort_by"] = sort_by
+            _expiring_state["mode"] = mode
+            _expiring_state["selected_scan_date"] = payload.get("summary", {}).get("scan_date")
+            _expiring_state["completed"] = datetime.now()
+            _expiring_state["error"] = None
+        save_scan("expiring_options", payload)
+        logger.info("Expiring Options scan complete: %d candidates", len(payload.get("all_rows", [])))
+    except Exception as e:
+        logger.exception("Expiring Options scan failed: %s", e)
+        with _expiring_lock:
+            _expiring_state["error"] = str(e)
+    finally:
+        with _expiring_lock:
+            _expiring_state["running"] = False
+            _expiring_state["current"] = ""
+
+
+@app.route("/expiring-options")
+def expiring_options_page():
+    from expiring_options import scanner
+    filters = _expiring_filters_from_args(request.args)
+    scan_date = _expiring_scan_date_from_args(request.args)
+    expiration_mode = request.args.get("expiration_mode", "next")
+    with _expiring_lock:
+        running = _expiring_state["running"]
+        completed = _expiring_state["completed"]
+        rows_by_level = _expiring_state.get("rows_by_level") or {"5": [], "10": [], "15": []}
+        all_rows = list(_expiring_state.get("all_rows") or [])
+        chain_rows = list(_expiring_state.get("chain_rows") or [])
+        summary = dict(_expiring_state.get("summary") or {})
+        errors = list(_expiring_state.get("errors") or [])
+        error = _expiring_state.get("error")
+        last_sort = _expiring_state.get("sort_by", "midpoint_premium_yield_on_strike")
+
+    mode = request.args.get("mode") or "live"
+    sort_by = request.args.get("sort_by") or last_sort
+    expiration_mode = request.args.get("expiration_mode") or "next"
+    scan_date_value = request.args.get("expiration_date") or scanner.next_standard_expiration().isoformat()
+    _universe_rows, universe_meta = _expiring_universe_rows_and_meta()
+    if summary.get("mode") and summary.get("mode") != mode:
+        rows_by_level = {"5": [], "10": [], "15": []}
+        all_rows = []
+        chain_rows = []
+        errors = []
+        summary = {
+            "mode": mode,
+            "total_symbols_loaded": universe_meta.get("count", 0),
+            "total_symbols_scanned": 0,
+            "total_candidates_found": 0,
+            "missing_data_symbols": 0,
+            "api_errors": 0,
+            "excluded_by_filters": 0,
+            "rows_5": 0,
+            "rows_10": 0,
+            "rows_15": 0,
+            "market_data_status": "Schwab Market Data API; real-time/delayed depends on account entitlements" if mode == "live" else "Test CSV data",
+            "warnings": [],
+        }
+    summary.setdefault("universe_count", universe_meta.get("count", 0))
+    summary.setdefault("universe_source", universe_meta.get("source", "unknown"))
+    summary.setdefault("universe_updated", universe_meta.get("updated", ""))
+    selected_symbol = clean_symbol(request.args.get("symbol", ""))
+    detail_rows = []
+    if selected_symbol:
+        selected_by_strike: dict[float, list[str]] = {}
+        for row in all_rows:
+            if row.get("symbol") == selected_symbol:
+                selected_by_strike.setdefault(float(row.get("actual_selected_strike")), []).append(f"{int(row.get('target_percentage'))}%")
+        for row in chain_rows:
+            if row.get("symbol") == selected_symbol:
+                item = dict(row)
+                bid = item.get("bid_price")
+                ask = item.get("ask_price")
+                item["midpoint"] = scanner.option_midpoint_price(bid, ask) if bid is not None and ask is not None else None
+                item["selected_levels"] = selected_by_strike.get(float(item.get("strike_price")), []) if item.get("strike_price") is not None else []
+                detail_rows.append(item)
+        detail_rows.sort(key=lambda r: r.get("strike_price") or 0, reverse=True)
+
+    return render_template(
+        "expiring_options.html",
+        running=running,
+        completed=completed,
+        rows_by_level=rows_by_level,
+        summary=summary,
+        errors=errors,
+        error=error,
+        filters=filters,
+        sort_by=sort_by,
+        sort_fields=scanner.SORT_FIELDS,
+        mode=mode,
+        expiration_mode=expiration_mode,
+        scan_date_value=scan_date_value,
+        has_token=(True if mode == "test" else get_valid_token() is not None),
+        selected_symbol=selected_symbol,
+        detail_rows=detail_rows,
+    )
+
+
+@app.route("/expiring-options/start", methods=["POST"])
+def expiring_options_start():
+    from expiring_options import scanner
+    mode = request.args.get("mode", "live")
+    sort_by = request.args.get("sort_by", "midpoint_premium_yield_on_strike")
+    if sort_by not in scanner.SORT_FIELDS:
+        sort_by = "midpoint_premium_yield_on_strike"
+    filters = _expiring_filters_from_args(request.args)
+    scan_date = _expiring_scan_date_from_args(request.args)
+    expiration_mode = request.args.get("expiration_mode", "next")
+    with _expiring_lock:
+        if _expiring_state["running"]:
+            return jsonify({"status": "already_running"})
+        _expiring_state.update({
+            "running": True,
+            "started": datetime.now(),
+            "completed": None,
+            "progress": 0,
+            "total": 0,
+            "current": "",
+            "error": None,
+            "filters": filters.to_dict(),
+            "sort_by": sort_by,
+            "mode": mode,
+            "expiration_mode": expiration_mode,
+            "selected_scan_date": scan_date.isoformat(),
+        })
+    threading.Thread(target=_run_expiring_options_background, args=(filters, sort_by, mode, scan_date), daemon=True).start()
+    return jsonify({"status": "started"})
+
+
+@app.route("/expiring-options/status")
+def expiring_options_status():
+    with _expiring_lock:
+        return jsonify({
+            "running": _expiring_state["running"],
+            "progress": _expiring_state["progress"],
+            "total": _expiring_state["total"],
+            "current": _expiring_state["current"],
+            "completed": _expiring_state["completed"].isoformat() if _expiring_state["completed"] else None,
+            "error": _expiring_state["error"],
+        })
+
+
+@app.route("/expiring-options/export/csv")
+def expiring_options_export_csv():
+    from expiring_options import scanner
+    level = request.args.get("level", "all")
+    with _expiring_lock:
+        if level in {"5", "10", "15"}:
+            rows = list((_expiring_state.get("rows_by_level") or {}).get(level, []))
+        else:
+            rows = list(_expiring_state.get("all_rows") or [])
+    if not rows:
+        return "No Expiring Options results to export", 404
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Response(scanner.export_csv(rows), mimetype="text/csv", headers={"Content-Disposition": f"attachment; filename=expiring_options_{level}_{ts}.csv"})
+
+
+@app.route("/expiring-options/export/xlsx")
+def expiring_options_export_xlsx():
+    from expiring_options import scanner
+    with _expiring_lock:
+        rows_by_level = dict(_expiring_state.get("rows_by_level") or {"5": [], "10": [], "15": []})
+        errors = list(_expiring_state.get("errors") or [])
+    if not any(rows_by_level.values()):
+        return "No Expiring Options results to export", 404
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    data = scanner.export_excel_bytes(rows_by_level, errors)
+    return Response(
+        data,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=expiring_options_{ts}.xlsx"},
+    )
+
+
+@app.route("/zerodte")
+def zerodte_page():
+    """0DTE Options Anomaly Scanner page."""
+    with _zerodte_lock:
+        running   = _zerodte_state["running"]
+        completed = _zerodte_state["completed"]
+        rows      = _zerodte_state.get("results")
+        summary   = _zerodte_state.get("summary")
+        error     = _zerodte_state.get("error")
+
+    has_token    = get_valid_token() is not None
+    filter_flag  = request.args.get("flag", "all")
+    top_n        = int(request.args.get("top", "100"))
+
+    display_rows = list(rows or [])
+    if filter_flag != "all" and display_rows:
+        display_rows = [r for r in display_rows if filter_flag in r.get("flags", [])]
+    display_rows = display_rows[:top_n]
+
+    return render_template(
+        "zerodte.html",
+        running=running, rows=display_rows, summary=summary or {},
+        error=error, filter_flag=filter_flag, top_n=top_n,
+        has_token=has_token, completed=completed,
+    )
+
+
+@app.route("/zerodte/start", methods=["POST"])
+def zerodte_start():
+    with _zerodte_lock:
+        if not _zerodte_state.get("enabled", True):
+            return jsonify({"status": "disabled"})
+        if _zerodte_state["running"]:
+            return jsonify({"status": "already_running"})
+        _zerodte_state.update({
+            "running": True, "started": datetime.now(),
+            "completed": None, "progress": 0, "total": 0,
+            "current": "", "error": None,
+        })
+    threading.Thread(target=_run_zerodte_background, daemon=True).start()
+    return jsonify({"status": "started"})
+
+
+@app.route("/zerodte/status")
+def zerodte_status():
+    with _zerodte_lock:
+        return jsonify({
+            "running":   _zerodte_state["running"],
+            "progress":  _zerodte_state["progress"],
+            "total":     _zerodte_state["total"],
+            "current":   _zerodte_state["current"],
+            "completed": _zerodte_state["completed"].isoformat() if _zerodte_state["completed"] else None,
+            "error":     _zerodte_state["error"],
+        })
+
+
+@app.route("/zerodte/toggle", methods=["POST"])
+def zerodte_toggle():
+    with _zerodte_lock:
+        _zerodte_state["enabled"] = not _zerodte_state.get("enabled", True)
+        enabled = _zerodte_state["enabled"]
+    return jsonify({"enabled": enabled})
+
+
+@app.route("/zerodte/export/csv")
+def zerodte_export_csv():
+    with _zerodte_lock:
+        rows = _zerodte_state.get("results")
+    if not rows:
+        return "No results to export", 404
+    df = pd.DataFrame(rows)
+    csv_data = df.to_csv(index=False)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Response(
+        csv_data, mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=zerodte_anomalies_{ts}.csv"},
+    )
+
+
 def _startup_scans():
     """Load cached results, then start fresh background scans."""
     from scan_cache import load_scan
@@ -1627,6 +2133,34 @@ def _startup_scans():
             _opts_state["completed"] = datetime.fromisoformat(cached_opts["timestamp"])
         logger.info("Loaded cached options results (%d rows)", len(cached_opts["data"]["rows"]))
 
+    cached_zerodte = load_scan("zerodte")
+    if cached_zerodte:
+        with _zerodte_lock:
+            _zerodte_state["results"]   = cached_zerodte["data"]["rows"]
+            _zerodte_state["summary"]   = cached_zerodte["data"]["summary"]
+            _zerodte_state["completed"] = datetime.fromisoformat(cached_zerodte["timestamp"])
+        logger.info("Loaded cached 0DTE results (%d anomalies)", len(cached_zerodte["data"]["rows"]))
+
+
+    cached_expiring = load_scan("expiring_options")
+    if cached_expiring:
+        try:
+            data = cached_expiring["data"]
+            with _expiring_lock:
+                _expiring_state["rows_by_level"] = data.get("rows_by_level", {"5": [], "10": [], "15": []})
+                _expiring_state["all_rows"] = data.get("all_rows", [])
+                _expiring_state["chain_rows"] = data.get("chain_rows", [])
+                _expiring_state["summary"] = data.get("summary", {})
+                _expiring_state["errors"] = data.get("errors", [])
+                _expiring_state["filters"] = data.get("filters", {})
+                _expiring_state["sort_by"] = data.get("sort_by", "midpoint_premium_yield_on_strike")
+                _expiring_state["mode"] = data.get("summary", {}).get("mode", "live")
+                _expiring_state["selected_scan_date"] = data.get("summary", {}).get("scan_date")
+                _expiring_state["completed"] = datetime.fromisoformat(cached_expiring["timestamp"])
+            logger.info("Loaded cached Expiring Options results (%d rows)", len(data.get("all_rows", [])))
+        except Exception as e:
+            logger.warning("Failed to restore Expiring Options cache: %s", e)
+
     # Pre-compute risk from cached CSP data
     if cached_csp:
         try:
@@ -1667,34 +2201,22 @@ def _startup_scans():
     else:
         logger.info("Skipping dashboard/options auto-scan (no Schwab token)")
 
-    # CSP + Momentum: always start (use yfinance, no OAuth needed)
-    with _csp_lock:
-        _csp_state["running"] = True
-        _csp_state["started"] = datetime.now()
-        _csp_state["progress"] = 0
-        _csp_state["total"] = 0
-        _csp_state["current"] = ""
-        _csp_state["error"] = None
-    threading.Thread(target=_run_csp_background, daemon=True).start()
+    # CSP + Momentum: run sequentially in one thread to avoid yfinance rate contention.
+    # Cached results are already loaded above, so the UI is responsive immediately.
+    def _run_yf_scans_sequentially():
+        for state, lock, target, name in [
+            (_csp_state,   _csp_lock,   _run_csp_background,   "CSP"),
+            (_scan_state,  _scan_lock,  _run_scan_background,  "momentum"),
+            (_momv2_state, _momv2_lock, _run_momv2_background, "momentum2"),
+        ]:
+            with lock:
+                state.update({"running": True, "started": datetime.now(),
+                              "progress": 0, "total": 0, "current": "", "error": None})
+            logger.info("Auto-starting %s scan", name)
+            target()
 
-    with _scan_lock:
-        _scan_state["running"] = True
-        _scan_state["started"] = datetime.now()
-        _scan_state["progress"] = 0
-        _scan_state["total"] = 0
-        _scan_state["current"] = ""
-        _scan_state["error"] = None
-    threading.Thread(target=_run_scan_background, daemon=True).start()
-
-    with _momv2_lock:
-        _momv2_state["running"] = True
-        _momv2_state["started"] = datetime.now()
-        _momv2_state["progress"] = 0
-        _momv2_state["total"] = 0
-        _momv2_state["current"] = ""
-        _momv2_state["error"] = None
-    threading.Thread(target=_run_momv2_background, daemon=True).start()
-    logger.info("Auto-started CSP + momentum + momentum2 scans")
+    threading.Thread(target=_run_yf_scans_sequentially, daemon=True).start()
+    logger.info("Auto-started CSP + momentum + momentum2 scans (sequential)")
 
 
 if __name__ == "__main__":
@@ -1718,6 +2240,24 @@ if __name__ == "__main__":
 
     # Load cached results + start fresh background scans
     _startup_scans()
+
+    # Start the 0DTE Mon/Wed/Fri auto-scheduler
+    def _zerodte_schedule_trigger():
+        with _zerodte_lock:
+            if _zerodte_state["running"] or not _zerodte_state.get("enabled", True):
+                return
+            _zerodte_state.update({
+                "running": True, "started": datetime.now(),
+                "completed": None, "progress": 0, "total": 0,
+                "current": "", "error": None,
+            })
+        threading.Thread(target=_run_zerodte_background, daemon=True).start()
+
+    try:
+        from zerodte.scheduler import start_scheduler as _start_zerodte_scheduler
+        _start_zerodte_scheduler(_zerodte_schedule_trigger)
+    except Exception as _sched_err:
+        logger.warning("0DTE scheduler failed to start: %s", _sched_err)
 
     print("\n" + "="*60)
     print("  Schwab Covered Call Dashboard")
