@@ -408,14 +408,12 @@ def build_composite(df: pd.DataFrame) -> pd.DataFrame:
         "pct_up_21", "pct_up_63",
         "vol_vs_20", "vol5_vs_20",
     ]
-    # Lower-is-better, will be negated
+
+    # Ensure columns exist and percentile-rank in a single pass
+    pct = pd.DataFrame(index=df.index)
     for m in higher_better:
         if m not in df.columns:
             df[m] = np.nan
-
-    # Percentile rank each metric → 0..100
-    pct = pd.DataFrame(index=df.index)
-    for m in higher_better:
         pct[m] = percentile_rank(df[m])
 
     # Weighted composite (boolean trend confirmations contribute fixed pts)
@@ -506,6 +504,16 @@ def run_screen(symbols: list[str], days: int = 120, progress_cb=None) -> pd.Data
     if spy is None or spy.empty:
         raise RuntimeError("Could not fetch SPY benchmark data")
 
+    # Pre-fetch each unique sector ETF once rather than once-per-stock
+    sector_etf_map = {sym: univ.get_sector_etf(sym) for sym in symbols}
+    unique_etfs = {etf for etf in sector_etf_map.values() if etf and etf != "SPY"}
+    sector_df_cache: dict[str, pd.DataFrame] = {}
+    for etf in unique_etfs:
+        etf_df = fetch_history(etf, days, token)
+        if etf_df is not None:
+            sector_df_cache[etf] = etf_df
+    logger.info("Pre-fetched %d sector ETFs", len(sector_df_cache))
+
     rows = []
     total = len(symbols)
     for i, sym in enumerate(symbols, 1):
@@ -515,17 +523,12 @@ def run_screen(symbols: list[str], days: int = 120, progress_cb=None) -> pd.Data
         if df is None or len(df) < WIN_3M:
             continue
         try:
-            sector_etf = univ.get_sector_etf(sym)
-            sec_df = None
-            if sector_etf and sector_etf != "SPY":
-                sec_df = fetch_history(sector_etf, days, token)
+            sector_etf = sector_etf_map.get(sym)
+            sec_df = sector_df_cache.get(sector_etf) if sector_etf else None
             row = analyze_stock(sym, df, spy, sector_etf_df=sec_df)
             rows.append(row)
         except Exception as e:
             logger.warning("analyze_stock failed for %s: %s", sym, e)
-            continue
-        # Be polite to APIs
-        time.sleep(0.05)
 
     if not rows:
         return pd.DataFrame()

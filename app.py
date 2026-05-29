@@ -691,6 +691,9 @@ def generate_self_signed_cert(cert_file, key_file):
 
 
 
+# Pre-compiled pattern for option description: "NVDA 05/16/2026 $135.00 Call"
+_OPT_DESC_RE = re.compile(r'(\d{2}/\d{2}/\d{4}).*?\$(\d+\.?\d*)')
+
 # ── Options positions logic ────────────────────────────────────────────────
 
 def parse_option_positions(accounts_data: list, show_full_account: bool = False) -> list:
@@ -721,19 +724,12 @@ def parse_option_positions(accounts_data: list, show_full_account: bool = False)
             description = instrument.get("description", "")
             symbol      = instrument.get("symbol", "")
 
-            # Parse expiration and strike from description or symbol
+            # Parse expiration and strike from description
             # Description format: "NVDA 05/16/2026 $135.00 Call"
-            expiration  = ""
-            strike      = ""
-            try:
-                parts = description.split()
-                for p in parts:
-                    if "/" in p and len(p) >= 8:  # date like 05/16/2026
-                        expiration = p
-                    elif p.startswith("$"):
-                        strike = p.replace("$", "")
-            except Exception:
-                pass
+            expiration = strike = ""
+            m = _OPT_DESC_RE.search(description)
+            if m:
+                expiration, strike = m.group(1), m.group(2)
 
             long_qty  = pos.get("longQuantity", 0)
             short_qty = pos.get("shortQuantity", 0)
@@ -1005,10 +1001,15 @@ def _run_options_background():
         for r in rows:
             r["current_price"] = live_prices.get(r["underlying"], 0)
 
-        total_calls = sum(1 for r in rows if r["type"] == "CALL")
-        total_puts  = sum(1 for r in rows if r["type"] == "PUT")
-        total_pnl   = sum(r["pnl"] for r in rows)
-        total_mv    = sum(r["market_value"] for r in rows)
+        total_calls = total_puts = 0
+        total_pnl = total_mv = 0.0
+        for r in rows:
+            if r["type"] == "CALL":
+                total_calls += 1
+            else:
+                total_puts += 1
+            total_pnl += r["pnl"]
+            total_mv  += r["market_value"]
 
         summary = {
             "accounts":  len(accounts_data),
@@ -1148,12 +1149,16 @@ def csp_page():
     vix_level = _csp_state.get("vix_level")
     vix_regime = _csp_state.get("vix_regime")
     if rows:
+        action_counts: dict[str, int] = {}
+        for r in rows:
+            a = r.get("action", "")
+            action_counts[a] = action_counts.get(a, 0) + 1
         summary = {
             "total_scanned": _csp_state.get("total", 0),
             "qualified":     len(rows),
-            "strong":        sum(1 for r in rows if r.get("action") == "Strong"),
-            "accept":        sum(1 for r in rows if r.get("action") == "Accept"),
-            "watch":         sum(1 for r in rows if r.get("action") == "Watch"),
+            "strong":        action_counts.get("Strong", 0),
+            "accept":        action_counts.get("Accept", 0),
+            "watch":         action_counts.get("Watch", 0),
             "completed":     completed.strftime("%Y-%m-%d %H:%M:%S") if completed else None,
         }
 

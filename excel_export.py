@@ -125,8 +125,9 @@ def _ensure_index_sheet(wb: Workbook):
 
 def _append_index_row(wb: Workbook, scan_dt: str, df: pd.DataFrame, sheet_name: str):
     ws = wb["Index"]
-    strong   = int((df["classification"] == "Strong").sum())
-    moderate = int((df["classification"] == "Moderate").sum())
+    counts   = df["classification"].value_counts()
+    strong   = int(counts.get("Strong", 0))
+    moderate = int(counts.get("Moderate", 0))
     top5     = df.head(5)["ticker"].tolist()
     while len(top5) < 5:
         top5.append("")
@@ -156,9 +157,10 @@ def _write_data_sheet(wb: Workbook, df: pd.DataFrame, sheet_name: str, scan_dt: 
     ws.row_dimensions[1].height = 22
 
     # ── Summary row ──
-    strong   = int((df["classification"] == "Strong").sum())
-    moderate = int((df["classification"] == "Moderate").sum())
-    weak     = int((df["classification"] == "Weak/Unconfirmed").sum())
+    counts   = df["classification"].value_counts()
+    strong   = int(counts.get("Strong", 0))
+    moderate = int(counts.get("Moderate", 0))
+    weak     = int(counts.get("Weak/Unconfirmed", 0))
     ws.merge_cells("A2:AD2")
     summ = ws["A2"]
     summ.value = (f"Strong: {strong}   Moderate: {moderate}   Weak/Unconfirmed: {weak}   "
@@ -169,27 +171,24 @@ def _write_data_sheet(wb: Workbook, df: pd.DataFrame, sheet_name: str, scan_dt: 
     summ.alignment = Alignment(horizontal="left", vertical="center")
     ws.row_dimensions[2].height = 16
 
-    # ── Description row (tooltip-style) ──
+    # ── Description row (tooltip-style) + column headers — single pass ──
+    ws.row_dimensions[3].height = 28
+    ws.row_dimensions[4].height = 32
     for col_idx, (hdr, field, width, fmt, desc) in enumerate(COLUMNS, 1):
         c = ws.cell(3, col_idx, desc)
         c.font      = Font(size=7, name="Arial", italic=True, color="6B7A8D")
         c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         c.fill      = PatternFill("solid", start_color="F4F6F9")
-        ws.row_dimensions[3].height = 28
-
-    # ── Column headers ──
-    for col_idx, (hdr, field, width, fmt, desc) in enumerate(COLUMNS, 1):
         c = ws.cell(4, col_idx, hdr)
         _style_header(c)
         ws.column_dimensions[get_column_letter(col_idx)].width = width
-    ws.row_dimensions[4].height = 32
     ws.freeze_panes = "C5"    # freeze rank + ticker columns
 
     # ── Data rows ──
     DATA_START = 5
-    for row_idx, (_, row) in enumerate(df.iterrows(), DATA_START):
-        cls   = str(row.get("classification", ""))
-        score = float(row.get("composite_score", 0) or 0)
+    for row_idx, row in enumerate(df.itertuples(index=False), DATA_START):
+        cls   = str(getattr(row, "classification", ""))
+        score = float(getattr(row, "composite_score", 0) or 0)
 
         # Row background by classification
         if cls == "Strong":
@@ -202,7 +201,7 @@ def _write_data_sheet(wb: Workbook, df: pd.DataFrame, sheet_name: str, scan_dt: 
             row_bg = "FFFFFF"
 
         for col_idx, (hdr, field, width, fmt, desc) in enumerate(COLUMNS, 1):
-            raw = row.get(field, "")
+            raw = getattr(row, field, "")
 
             # Type coercions
             if fmt == "@":

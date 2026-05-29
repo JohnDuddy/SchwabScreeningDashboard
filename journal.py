@@ -100,33 +100,41 @@ def get_stats() -> Dict[str, Any]:
     open_trades = [t for t in trades if t["status"] == "open"]
     closed_trades = [t for t in trades if t["status"] == "closed"]
 
-    wins = [t for t in closed_trades if (t.get("pnl") or 0) > 0]
-    losses = [t for t in closed_trades if (t.get("pnl") or 0) <= 0]
-    total_pnl = sum(t.get("pnl", 0) or 0 for t in closed_trades)
+    wins = losses = assigned = expired = bought_back = 0
+    total_pnl = return_sum = 0.0
+    return_count = 0
 
-    assigned = [t for t in closed_trades if t.get("close_reason") == "assigned"]
-    expired = [t for t in closed_trades if t.get("close_reason") == "expired"]
-    bought_back = [t for t in closed_trades if t.get("close_reason") == "bought_back"]
+    for t in closed_trades:
+        pnl = t.get("pnl") or 0
+        total_pnl += pnl
+        if pnl > 0:
+            wins += 1
+        else:
+            losses += 1
+        reason = t.get("close_reason", "")
+        if reason == "assigned":
+            assigned += 1
+        elif reason == "expired":
+            expired += 1
+        elif reason == "bought_back":
+            bought_back += 1
+        cash = t.get("cash_required") or 0
+        if cash > 0:
+            return_sum += pnl / cash * 100
+            return_count += 1
 
-    avg_return = 0.0
-    if closed_trades:
-        returns = []
-        for t in closed_trades:
-            if t.get("cash_required") and t["cash_required"] > 0:
-                returns.append((t.get("pnl", 0) or 0) / t["cash_required"] * 100)
-        if returns:
-            avg_return = sum(returns) / len(returns)
+    avg_return = return_sum / return_count if return_count else 0.0
 
     return {
         "total": total,
         "open": len(open_trades),
         "closed": len(closed_trades),
-        "wins": len(wins),
-        "losses": len(losses),
-        "win_rate": round(len(wins) / len(closed_trades) * 100, 1) if closed_trades else 0.0,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": round(wins / len(closed_trades) * 100, 1) if closed_trades else 0.0,
         "total_pnl": round(total_pnl, 2),
         "avg_return_pct": round(avg_return, 2),
-        "assigned": len(assigned),
-        "expired": len(expired),
-        "bought_back": len(bought_back),
+        "assigned": assigned,
+        "expired": expired,
+        "bought_back": bought_back,
     }
