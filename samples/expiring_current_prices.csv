@@ -1,0 +1,4 @@
+﻿symbol,current_stock_price,quote_timestamp,market_data_status
+AAPL,200.00,2026-05-29 09:45:00,Test CSV data
+MSFT,500.00,2026-05-29 09:45:00,Test CSV data
+NVDA,120.00,2026-05-29 09:45:00,Test CSV data

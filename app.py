@@ -449,6 +449,7 @@ def parse_positions(accounts_data: list, show_full_account: bool = False) -> lis
                 "ticker":          ticker,
                 "company_name":    display_company_name(ticker, company_names.get(ticker, "")),
                 "purchase_price":  purchase_price,
+                "current_price":   None,
                 "shares_owned":    shares,
                 "abs_shares":      abs_shares,
                 "cap_exact":       round(cap_exact, 4),
@@ -580,13 +581,17 @@ def export_csv():
         try:
             accounts_data, _ = _fetch_all_accounts(token)
             rows = parse_positions(accounts_data, show_full_account=False)
+            tickers = list({r["ticker"] for r in rows if r["ticker"]})
+            live_prices = fetch_underlying_quotes(tickers, token)
+            for r in rows:
+                r["current_price"] = live_prices.get(r["ticker"])
         except Exception as e:
             return f"Export failed: {e}", 500
 
     output = io.StringIO()
     fieldnames = [
         "account_name", "account_number", "ticker", "company_name",
-        "purchase_price", "shares_owned", "abs_shares", "cap_exact", "cap_whole",
+        "purchase_price", "current_price", "shares_owned", "abs_shares", "cap_exact", "cap_whole",
         "cc_present", "to_be_sold", "notes",
     ]
     writer = csv.DictWriter(output, fieldnames=fieldnames)
@@ -955,6 +960,12 @@ def _run_dashboard_background():
         accounts_data, errors = _fetch_all_accounts(token)
 
         rows = parse_positions(accounts_data, show_full_account=False)
+
+        # Fetch live underlying prices and attach to each row
+        tickers = list({r["ticker"] for r in rows if r["ticker"]})
+        live_prices = fetch_underlying_quotes(tickers, token)
+        for r in rows:
+            r["current_price"] = live_prices.get(r["ticker"])
 
         summary = {
             "accounts":       len(accounts_data),
@@ -2080,6 +2091,240 @@ def zerodte_export_csv():
     )
 
 
+# ── Equity Ranking routes ──────────────────────────────────────────────────
+
+# Scan state: quantitative scoring of the full universe
+_equity_scan_state = {
+    "running": False, "started": None, "completed": None,
+    "phase": None, "progress": 0, "total": 0, "current": "",
+    "rows": None, "error": None,
+}
+_equity_scan_lock = threading.Lock()
+
+# AI write-up state: OpenAI analysis of selected tickers
+_equity_ai_state = {
+    "running": False, "started": None, "completed": None,
+    "report": "", "tickers": [], "error": None,
+}
+_equity_ai_lock = threading.Lock()
+
+
+def _run_equity_scan_background():
+    """Background: fetch all universe tickers, score quantitatively."""
+    from equity.data_fetcher import fetch_universe_bulk
+    from equity.scorer import rank_universe
+    import universe as univ
+
+    try:
+        tickers, _ = univ.load_universe()
+        with _equity_scan_lock:
+            _equity_scan_state.update({
+                "phase": "fetching", "progress": 0,
+                "total": len(tickers), "current": "", "rows": None, "error": None,
+            })
+
+        token = get_valid_token()
+
+        def progress_cb(i, total, ticker):
+            with _equity_scan_lock:
+                _equity_scan_state["progress"] = i
+                _equity_scan_state["current"]  = ticker
+
+        results = fetch_universe_bulk(tickers, token=token, progress_cb=progress_cb)
+
+        with _equity_scan_lock:
+            _equity_scan_state["phase"] = "scoring"
+
+        raw_data = [r.get("data", r) if not r.get("error") else r for r in results]
+        ranked   = rank_universe(results)
+
+        with _equity_scan_lock:
+            _equity_scan_state["rows"]      = ranked
+            _equity_scan_state["phase"]     = "done"
+            _equity_scan_state["completed"] = datetime.now()
+
+        from scan_cache import save_scan
+        save_scan("equity_scan", {"rows": ranked})
+        logger.info("Equity scan complete: %d stocks ranked", len(ranked))
+
+    except Exception as e:
+        logger.exception("Equity scan failed: %s", e)
+        with _equity_scan_lock:
+            _equity_scan_state["error"] = str(e)
+            _equity_scan_state["phase"] = "error"
+    finally:
+        with _equity_scan_lock:
+            _equity_scan_state["running"] = False
+
+
+def _run_equity_ai_background(tickers, objective, horizon, style, benchmark):
+    """Background: fetch detailed data for selected tickers, call OpenAI."""
+    from equity.data_fetcher import fetch_ticker_detail, format_for_prompt
+    from equity.claude_analyst import run_analysis
+
+    try:
+        with _equity_ai_lock:
+            _equity_ai_state.update({"report": "", "error": None})
+
+        token = get_valid_token()
+        detailed = [fetch_ticker_detail(t, token=token) for t in tickers]
+        data_str = "\n".join(format_for_prompt(r) for r in detailed)
+
+        def stream_cb(chunk):
+            with _equity_ai_lock:
+                _equity_ai_state["report"] += chunk
+
+        report = run_analysis(data_str, tickers, objective, horizon, style, benchmark,
+                              stream_cb=stream_cb)
+
+        with _equity_ai_lock:
+            _equity_ai_state["report"]    = report
+            _equity_ai_state["completed"] = datetime.now()
+
+        from scan_cache import save_scan
+        save_scan("equity_ai", {"report": report, "tickers": tickers,
+                                "objective": objective, "horizon": horizon,
+                                "style": style, "benchmark": benchmark})
+
+    except Exception as e:
+        logger.exception("Equity AI analysis failed: %s", e)
+        with _equity_ai_lock:
+            _equity_ai_state["error"] = str(e)
+    finally:
+        with _equity_ai_lock:
+            _equity_ai_state["running"] = False
+
+
+@app.route("/equity")
+def equity_page():
+    with _equity_scan_lock:
+        scan  = dict(_equity_scan_state)
+    with _equity_ai_lock:
+        ai    = dict(_equity_ai_state)
+    has_api_key = bool(os.environ.get("OPENAI_API_KEY"))
+    return render_template("equity.html", scan=scan, ai=ai, has_api_key=has_api_key)
+
+
+@app.route("/equity/scan", methods=["POST"])
+def equity_scan_start():
+    with _equity_scan_lock:
+        if _equity_scan_state["running"]:
+            return jsonify({"status": "already_running"})
+        _equity_scan_state.update({
+            "running": True, "started": datetime.now(),
+            "completed": None, "phase": "fetching",
+            "progress": 0, "total": 0, "current": "",
+            "rows": None, "error": None,
+        })
+    threading.Thread(target=_run_equity_scan_background, daemon=True).start()
+    return jsonify({"status": "started"})
+
+
+@app.route("/equity/scan/status")
+def equity_scan_status():
+    with _equity_scan_lock:
+        return jsonify({
+            "running":   _equity_scan_state["running"],
+            "phase":     _equity_scan_state["phase"],
+            "progress":  _equity_scan_state["progress"],
+            "total":     _equity_scan_state["total"],
+            "current":   _equity_scan_state["current"],
+            "completed": _equity_scan_state["completed"].isoformat() if _equity_scan_state["completed"] else None,
+            "error":     _equity_scan_state["error"],
+            "row_count": len(_equity_scan_state["rows"] or []),
+        })
+
+
+@app.route("/equity/scan/results")
+def equity_scan_results():
+    """Return ranked rows as JSON (used for table rendering)."""
+    with _equity_scan_lock:
+        rows = list(_equity_scan_state.get("rows") or [])
+    return jsonify(rows)
+
+
+@app.route("/equity/scan/export/csv")
+def equity_scan_export_csv():
+    with _equity_scan_lock:
+        rows = list(_equity_scan_state.get("rows") or [])
+    if not rows:
+        return "No scan results to export", 404
+    df = pd.DataFrame(rows)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Response(
+        df.to_csv(index=False),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=equity_ranking_{ts}.csv"},
+    )
+
+
+@app.route("/equity/analyze", methods=["POST"])
+def equity_analyze():
+    """Start OpenAI write-up for selected tickers."""
+    data = request.get_json() or {}
+    tickers = [t.strip().upper() for t in data.get("tickers", []) if t.strip()]
+    if not tickers:
+        return jsonify({"status": "error", "error": "No tickers provided"}), 400
+    if len(tickers) > 10:
+        return jsonify({"status": "error", "error": "Max 10 tickers for AI write-up"}), 400
+    if not os.environ.get("OPENAI_API_KEY"):
+        return jsonify({"status": "error", "error": "OPENAI_API_KEY not set in .env"}), 400
+
+    objective = data.get("objective", "long-term compounders")
+    horizon   = data.get("horizon", "3 years")
+    style     = data.get("style", "quality-focused")
+    benchmark = data.get("benchmark", "S&P 500")
+
+    with _equity_ai_lock:
+        if _equity_ai_state["running"]:
+            return jsonify({"status": "already_running"})
+        _equity_ai_state.update({
+            "running": True, "started": datetime.now(),
+            "completed": None, "report": "", "tickers": tickers, "error": None,
+        })
+
+    threading.Thread(
+        target=_run_equity_ai_background,
+        args=(tickers, objective, horizon, style, benchmark),
+        daemon=True,
+    ).start()
+    return jsonify({"status": "started"})
+
+
+@app.route("/equity/analyze/status")
+def equity_analyze_status():
+    with _equity_ai_lock:
+        return jsonify({
+            "running":    _equity_ai_state["running"],
+            "completed":  _equity_ai_state["completed"].isoformat() if _equity_ai_state["completed"] else None,
+            "error":      _equity_ai_state["error"],
+            "tickers":    _equity_ai_state["tickers"],
+            "has_report": bool(_equity_ai_state.get("report")),
+        })
+
+
+@app.route("/equity/analyze/report")
+def equity_analyze_report():
+    with _equity_ai_lock:
+        return jsonify({
+            "report": _equity_ai_state.get("report") or "",
+            "running": _equity_ai_state["running"],
+        })
+
+
+@app.route("/equity/analyze/export")
+def equity_analyze_export():
+    with _equity_ai_lock:
+        report  = _equity_ai_state.get("report") or ""
+        tickers = _equity_ai_state.get("tickers", [])
+    if not report:
+        return "No report to export", 404
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"equity_analysis_{'_'.join(tickers)}_{ts}.md"
+    return Response(report, mimetype="text/markdown",
+                    headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+
 def _startup_scans():
     """Load cached results, then start fresh background scans."""
     from scan_cache import load_scan
@@ -2165,6 +2410,28 @@ def _startup_scans():
             logger.info("Loaded cached Expiring Options results (%d rows)", len(data.get("all_rows", [])))
         except Exception as e:
             logger.warning("Failed to restore Expiring Options cache: %s", e)
+
+    cached_equity_scan = load_scan("equity_scan")
+    if cached_equity_scan:
+        try:
+            with _equity_scan_lock:
+                _equity_scan_state["rows"]      = cached_equity_scan["data"]["rows"]
+                _equity_scan_state["completed"] = datetime.fromisoformat(cached_equity_scan["timestamp"])
+                _equity_scan_state["phase"]     = "done"
+            logger.info("Loaded cached equity scan (%d rows)", len(cached_equity_scan["data"]["rows"]))
+        except Exception as e:
+            logger.warning("Failed to restore equity scan cache: %s", e)
+
+    cached_equity_ai = load_scan("equity_ai")
+    if cached_equity_ai:
+        try:
+            with _equity_ai_lock:
+                _equity_ai_state["report"]    = cached_equity_ai["data"]["report"]
+                _equity_ai_state["tickers"]   = cached_equity_ai["data"].get("tickers", [])
+                _equity_ai_state["completed"] = datetime.fromisoformat(cached_equity_ai["timestamp"])
+            logger.info("Loaded cached equity AI report")
+        except Exception as e:
+            logger.warning("Failed to restore equity AI cache: %s", e)
 
     # Pre-compute risk from cached CSP data
     if cached_csp:

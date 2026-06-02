@@ -195,12 +195,13 @@ tbody tr:nth-child(even):not(.highlight) { background: #fafbfc; }
         <th onclick="sortTable(2)">Ticker</th>
         <th onclick="sortTable(3)">Company</th>
         <th onclick="sortTable(4)" class="num">Purchase Price</th>
-        <th onclick="sortTable(5)" class="num">Shares Owned</th>
-        <th onclick="sortTable(6)" class="num">|Shares|</th>
-        <th onclick="sortTable(7)" class="num">Cap (Exact)</th>
-        <th onclick="sortTable(8)" class="num">Cap (Whole)</th>
-        <th onclick="sortTable(9)" class="num">Calls Present</th>
-        <th onclick="sortTable(10)" class="num">To Be Sold</th>
+        <th onclick="sortTable(5)" class="num">Current Price</th>
+        <th onclick="sortTable(6)" class="num">Shares Owned</th>
+        <th onclick="sortTable(7)" class="num">|Shares|</th>
+        <th onclick="sortTable(8)" class="num">Cap (Exact)</th>
+        <th onclick="sortTable(9)" class="num">Cap (Whole)</th>
+        <th onclick="sortTable(10)" class="num">Calls Present</th>
+        <th onclick="sortTable(11)" class="num">To Be Sold</th>
         <th>Notes</th>
       </tr>
     </thead>
@@ -212,6 +213,7 @@ tbody tr:nth-child(even):not(.highlight) { background: #fafbfc; }
         <td class="ticker">{{ r.ticker }}</td>
         <td>{{ r.company_name }}</td>
         <td class="num">{{ "$%.2f" | format(r.purchase_price) if r.purchase_price is not none else "n/a" }}</td>
+        <td class="num">{{ "$%.2f" | format(r.current_price) if r.current_price is not none else "n/a" }}</td>
         <td class="num">{{ r.shares_owned | int }}</td>
         <td class="num">{{ r.abs_shares | int }}</td>
         <td class="num">{{ "%.2f" | format(r.cap_exact) }}</td>
@@ -222,7 +224,7 @@ tbody tr:nth-child(even):not(.highlight) { background: #fafbfc; }
       </tr>
       {% else %}
       <tr>
-        <td colspan="12" style="text-align:center;padding:2.5rem;color:var(--muted);">
+        <td colspan="13" style="text-align:center;padding:2.5rem;color:var(--muted);">
           {% if running %}Loading positions…{% else %}No positions match the current filter.{% endif %}
         </td>
       </tr>

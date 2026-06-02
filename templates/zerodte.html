@@ -1,0 +1,506 @@
+{% extends "base.html" %}
+
+{% block title %}0DTE Anomaly Scanner — Schwab Dashboard{% endblock %}
+
+{% block extra_style %}
+/* ── Summary banner ──────────────────────────────────────────────── */
+.anomaly-banner {
+  border-radius: 8px;
+  padding: 1rem 1.6rem;
+  margin-bottom: 1.4rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .6rem;
+}
+.banner-found   { background: #fdecea; border: 2px solid var(--danger);  color: #7a1010; }
+.banner-clean   { background: #e6f9ee; border: 2px solid var(--accent);  color: #1a6b3a; }
+.banner-pending { background: #f0f4f8; border: 2px solid var(--border);  color: var(--muted); }
+.banner-title   { font-size: 1rem; font-weight: 700; }
+.banner-sub     { font-size: .83rem; font-weight: 400; margin-top: .15rem; opacity: .85; }
+.banner-badge   {
+  font-size: .8rem; padding: .3rem .9rem;
+  border-radius: 20px; font-weight: 700; letter-spacing: .04em;
+}
+.badge-danger   { background: var(--danger); color: #fff; }
+.badge-success  { background: var(--accent); color: #fff; }
+.badge-muted    { background: #ccc; color: #333; }
+
+/* ── Summary metrics ─────────────────────────────────────────────── */
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.4rem;
+}
+.metric-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.2rem;
+  text-align: center;
+}
+.metric-card .val { font-size: 1.8rem; font-weight: 700; color: var(--schwab-blue); }
+.metric-card .lbl { font-size: .78rem; color: var(--muted); margin-top: .2rem; }
+.metric-card .val.val-danger  { color: var(--danger); }
+.metric-card .val.val-warn    { color: var(--warn); }
+.metric-card .val.val-success { color: var(--accent); }
+
+/* ── Controls ────────────────────────────────────────────────────── */
+.controls { display: flex; gap: .7rem; align-items: center; flex-wrap: wrap; margin-bottom: 1.2rem; }
+.filter-tabs { display: flex; gap: .4rem; flex-wrap: wrap; }
+.tab-btn {
+  padding: .3rem .75rem;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: #fff;
+  font-size: .8rem;
+  cursor: pointer;
+  text-decoration: none;
+  color: var(--text);
+  transition: background .12s, color .12s;
+}
+.tab-btn:hover { background: var(--schwab-blue); color: #fff; border-color: var(--schwab-blue); }
+.tab-btn.active { background: var(--schwab-light); color: #fff; border-color: var(--schwab-light); }
+
+/* ── Progress bar ────────────────────────────────────────────────── */
+#progress-wrap { display: none; margin-bottom: 1rem; }
+.progress-bar-outer { background: #e8edf3; border-radius: 4px; height: 8px; overflow: hidden; }
+.progress-bar-inner { height: 100%; background: var(--schwab-light); transition: width .3s; }
+.progress-text { font-size: .82rem; color: var(--muted); margin-top: .3rem; }
+
+/* ── Table ───────────────────────────────────────────────────────── */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: .81rem; }
+th {
+  background: var(--schwab-blue); color: #fff;
+  padding: .5rem .55rem; text-align: left;
+  white-space: nowrap; cursor: pointer; user-select: none;
+}
+th:hover { background: var(--schwab-light); }
+td { padding: .4rem .55rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
+tr:hover td { background: #f0f4f8; }
+
+/* ── Score pills ─────────────────────────────────────────────────── */
+.score-pill {
+  display: inline-block; border-radius: 12px;
+  padding: .15rem .6rem; font-weight: 700; font-size: .78rem;
+  min-width: 2.6rem; text-align: center;
+}
+.score-high { background: #fdecea; color: var(--danger); }
+.score-mid  { background: #fff3d6; color: #7a5000; }
+.score-low  { background: #e6f9ee; color: #1a6b3a; }
+
+/* ── Flag badges ─────────────────────────────────────────────────── */
+.flag-badge {
+  display: inline-block; border-radius: 4px;
+  padding: .1rem .4rem; font-size: .7rem;
+  font-weight: 700; letter-spacing: .03em; margin: .05rem;
+  white-space: nowrap;
+}
+.flag-PARITY         { background: #fdecea; color: var(--danger); }
+.flag-STALE          { background: #fff3d6; color: #7a5000; }
+.flag-HIGH_IV        { background: #e8d5ff; color: #5a007a; }
+.flag-LOW_IV         { background: #d6eaff; color: #1a4a80; }
+.flag-WIDE_SPREAD    { background: #ffe0b2; color: #7a3000; }
+.flag-UNUSUAL_VOLUME { background: #e0f7fa; color: #006064; }
+
+.type-call { color: var(--accent);   font-weight: 700; }
+.type-put  { color: var(--danger);   font-weight: 700; }
+{% endblock %}
+
+{% block content %}
+<h2 style="margin-bottom:1rem;">⚡ 0DTE Options Anomaly Scanner</h2>
+
+<!-- ── Summary Banner ────────────────────────────────────────────── -->
+{% if summary and summary.total_anomalies is defined %}
+  {% if summary.total_anomalies > 0 %}
+  <div class="anomaly-banner banner-found">
+    <div>
+      <div class="banner-title">
+        {{ summary.total_anomalies }} Pricing Anomalies Detected
+        across {{ summary.tickers_with_anomalies }} ticker(s)
+      </div>
+      <div class="banner-sub">
+        Scanned {{ summary.tickers_scanned }} underlyings
+        for 0DTE options expiring {{ summary.scan_date }}.
+        Last updated {{ summary.timestamp }}.
+      </div>
+    </div>
+    <span class="banner-badge badge-danger">ANOMALIES FOUND</span>
+  </div>
+  {% else %}
+  <div class="anomaly-banner banner-clean">
+    <div>
+      <div class="banner-title">No Significant Anomalies Found</div>
+      <div class="banner-sub">
+        Scanned {{ summary.tickers_scanned }} underlyings on {{ summary.scan_date }}.
+        All 0DTE option prices appear within normal bounds.
+      </div>
+    </div>
+    <span class="banner-badge badge-success">CLEAN</span>
+  </div>
+  {% endif %}
+{% elif not running %}
+<div class="anomaly-banner banner-pending">
+  <div>
+    <div class="banner-title">No scan results yet</div>
+    <div class="banner-sub">
+      Run the scanner to detect unusually priced 0DTE options.
+      Auto-runs Mon/Wed/Fri at 9:45 AM CT when Schwab is authenticated.
+    </div>
+  </div>
+  <span class="banner-badge badge-muted">PENDING</span>
+</div>
+{% endif %}
+
+<!-- ── Controls ──────────────────────────────────────────────────── -->
+<div class="controls">
+  {% if has_token %}
+    <button id="scan-btn" class="btn btn-primary" onclick="startScan()">▶ Run Scan Now</button>
+  {% else %}
+    <a href="/login" class="btn btn-danger">⚠ Connect Schwab to Scan</a>
+  {% endif %}
+  {% if rows %}
+  <a href="/zerodte/export/csv" class="btn btn-secondary">⬇ Export CSV</a>
+  {% endif %}
+  {% if summary.timestamp %}
+  <span style="font-size:.8rem;color:var(--muted);">Last scan: {{ summary.timestamp }}</span>
+  {% endif %}
+</div>
+
+<!-- ── Flag filter tabs ───────────────────────────────────────────── -->
+{% if rows or (summary and summary.total_anomalies) %}
+<div class="filter-tabs" style="margin-bottom:1rem;">
+  <a href="/zerodte?flag=all"
+     class="tab-btn {% if filter_flag == 'all' %}active{% endif %}">All</a>
+  <a href="/zerodte?flag=PARITY"
+     class="tab-btn {% if filter_flag == 'PARITY' %}active{% endif %}">
+    Parity Violation</a>
+  <a href="/zerodte?flag=STALE"
+     class="tab-btn {% if filter_flag == 'STALE' %}active{% endif %}">
+    Stale Pricing</a>
+  <a href="/zerodte?flag=HIGH_IV"
+     class="tab-btn {% if filter_flag == 'HIGH_IV' %}active{% endif %}">
+    High IV</a>
+  <a href="/zerodte?flag=WIDE_SPREAD"
+     class="tab-btn {% if filter_flag == 'WIDE_SPREAD' %}active{% endif %}">
+    Wide Spread</a>
+  <a href="/zerodte?flag=UNUSUAL_VOLUME"
+     class="tab-btn {% if filter_flag == 'UNUSUAL_VOLUME' %}active{% endif %}">
+    Unusual Volume</a>
+</div>
+{% endif %}
+
+<!-- ── Error display ──────────────────────────────────────────────── -->
+{% if error %}
+<div class="card" style="background:#fdecea;border-color:var(--danger);margin-bottom:1rem;">
+  <strong>Scan error:</strong> {{ error }}
+</div>
+{% endif %}
+
+<!-- ── Progress bar ───────────────────────────────────────────────── -->
+<div id="progress-wrap">
+  <div class="progress-bar-outer">
+    <div class="progress-bar-inner" id="progress-bar" style="width:0%"></div>
+  </div>
+  <div class="progress-text" id="progress-text">Starting scan…</div>
+</div>
+
+<!-- ── Summary metric cards ───────────────────────────────────────── -->
+{% if summary and summary.tickers_scanned %}
+<div class="summary-grid">
+  <div class="metric-card">
+    <div class="val">{{ summary.tickers_scanned }}</div>
+    <div class="lbl">Tickers Scanned</div>
+  </div>
+  <div class="metric-card">
+    <div class="val {% if summary.total_anomalies > 0 %}val-danger{% endif %}">
+      {{ summary.total_anomalies }}</div>
+    <div class="lbl">Total Anomalies</div>
+  </div>
+  <div class="metric-card">
+    <div class="val {% if summary.parity_count > 0 %}val-danger{% endif %}">
+      {{ summary.parity_count }}</div>
+    <div class="lbl">Parity Violations</div>
+  </div>
+  <div class="metric-card">
+    <div class="val {% if summary.stale_count > 0 %}val-warn{% endif %}">
+      {{ summary.stale_count }}</div>
+    <div class="lbl">Stale Prices</div>
+  </div>
+  <div class="metric-card">
+    <div class="val {% if summary.iv_count > 0 %}val-warn{% endif %}">
+      {{ summary.iv_count }}</div>
+    <div class="lbl">IV Anomalies</div>
+  </div>
+  <div class="metric-card">
+    <div class="val {% if summary.spread_count > 0 %}val-warn{% endif %}">
+      {{ summary.spread_count }}</div>
+    <div class="lbl">Wide Spreads</div>
+  </div>
+  <div class="metric-card">
+    <div class="val {% if summary.volume_count > 0 %}val-warn{% endif %}">
+      {{ summary.volume_count }}</div>
+    <div class="lbl">Unusual Volume</div>
+  </div>
+</div>
+{% endif %}
+
+<!-- ── Main results table ──────────────────────────────────────────── -->
+{% if rows %}
+<div class="card" style="padding:1rem;">
+  <div class="table-wrap">
+    <table id="main-table">
+      <thead>
+        <tr>
+          <th onclick="sortTable(0)">#</th>
+          <th onclick="sortTable(1)">Ticker</th>
+          <th onclick="sortTable(2)">Type</th>
+          <th onclick="sortTable(3)">Strike</th>
+          <th onclick="sortTable(4)">Underlying $</th>
+          <th onclick="sortTable(5)">Bid</th>
+          <th onclick="sortTable(6)">Ask</th>
+          <th onclick="sortTable(7)">Last</th>
+          <th onclick="sortTable(8)">Mid</th>
+          <th onclick="sortTable(9)" title="Intrinsic value (ITM options only)">Intrinsic</th>
+          <th onclick="sortTable(10)">Volume</th>
+          <th onclick="sortTable(11)">OI</th>
+          <th onclick="sortTable(12)" title="Implied Volatility %">IV %</th>
+          <th onclick="sortTable(13)">Delta</th>
+          <th onclick="sortTable(14)">Flags</th>
+          <th onclick="sortTable(15)" title="Composite Anomaly Score (0–100)">Score</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        {% set score = r.anomaly_score %}
+        {% if score >= 55 %}
+          {% set pill = "score-high" %}
+        {% elif score >= 30 %}
+          {% set pill = "score-mid" %}
+        {% else %}
+          {% set pill = "score-low" %}
+        {% endif %}
+        <tr>
+          <td>{{ r.rank }}</td>
+          <td><strong>{{ r.underlying }}</strong>
+            <br><span style="font-size:.7rem;color:var(--muted);">{{ r.underlying_price }}</span>
+          </td>
+          <td>
+            {% if r.option_type == "CALL" %}
+              <span class="type-call">CALL</span>
+            {% else %}
+              <span class="type-put">PUT</span>
+            {% endif %}
+          </td>
+          <td>${{ "%.2f" | format(r.strike) }}</td>
+          <td>${{ "%.2f" | format(r.underlying_price) }}</td>
+          <td>
+            {% if r.bid > 0 %}${{ "%.3f" | format(r.bid) }}{% else %}—{% endif %}
+          </td>
+          <td>
+            {% if r.ask > 0 %}${{ "%.3f" | format(r.ask) }}{% else %}—{% endif %}
+          </td>
+          <td>
+            {% if r.last > 0 %}
+              ${{ "%.3f" | format(r.last) }}
+              {% if r.stale_gap_pct is defined %}
+                <br><span style="font-size:.68rem;color:var(--warn);">
+                  {{ r.stale_gap_pct }}% from mid
+                </span>
+              {% endif %}
+            {% else %}—{% endif %}
+          </td>
+          <td>${{ "%.3f" | format(r.mid) }}</td>
+          <td>
+            {% if r.intrinsic_value > 0 %}
+              ${{ "%.3f" | format(r.intrinsic_value) }}
+              {% if r.parity_gap is defined %}
+                <br><span style="font-size:.68rem;color:var(--danger);">
+                  −${{ "%.3f" | format(r.parity_gap) }} below
+                </span>
+              {% endif %}
+            {% else %}—{% endif %}
+          </td>
+          <td>{{ "{:,}".format(r.volume) }}</td>
+          <td>{{ "{:,}".format(r.open_interest) }}</td>
+          <td>
+            {% if r.iv_pct > 0 %}
+              {{ "%.1f" | format(r.iv_pct) }}%
+            {% else %}—{% endif %}
+          </td>
+          <td>
+            {% if r.delta != 0 %}
+              {{ "%.3f" | format(r.delta) }}
+            {% else %}—{% endif %}
+          </td>
+          <td>
+            {% for flag in r.flags %}
+              <span class="flag-badge flag-{{ flag }}">
+                {{ flag | replace("_", " ") }}
+              </span>
+            {% endfor %}
+          </td>
+          <td>
+            <span class="score-pill {{ pill }}">{{ score }}</span>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p style="margin-top:.8rem;font-size:.76rem;color:var(--muted);">
+    Score 0–100: higher = stronger anomaly signal.
+    PARITY = bid below intrinsic value; STALE = last trade far from current mid;
+    HIGH_IV / LOW_IV = abnormal implied volatility;
+    WIDE_SPREAD = bid-ask spread &gt;60% of mid;
+    UNUSUAL_VOLUME = high volume on near-worthless strike.
+  </p>
+</div>
+
+{% elif not running %}
+<div class="card" style="text-align:center;padding:3rem;">
+  {% if has_token %}
+    <p style="color:var(--muted);margin-bottom:1rem;">
+      No results yet. Click <strong>Run Scan Now</strong> to check today's
+      0DTE options for pricing anomalies.
+    </p>
+    <button class="btn btn-primary" onclick="startScan()">▶ Run Scan Now</button>
+  {% else %}
+    <p style="color:var(--muted);margin-bottom:1rem;">
+      Schwab authentication required to fetch live options chains.
+    </p>
+    <a href="/login" class="btn btn-danger">Connect Schwab Account</a>
+  {% endif %}
+</div>
+{% endif %}
+
+<!-- ── Anomaly type reference card ────────────────────────────────── -->
+<div class="card" style="margin-top:1.4rem;">
+  <h3 style="margin-bottom:.8rem;font-size:.95rem;color:var(--schwab-blue);">
+    Anomaly Type Reference
+  </h3>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem;font-size:.82rem;">
+    <div>
+      <strong><span class="flag-badge flag-PARITY">PARITY</span> Parity Violation</strong><br>
+      <span style="color:var(--muted);">
+        ITM option's bid price is below its intrinsic value by &gt;$0.10.
+        Example: Stock at $150, Call strike $145 — intrinsic = $5.00, but bid = $4.80.
+        Can indicate a genuine arbitrage or a quoting error.
+      </span>
+    </div>
+    <div>
+      <strong><span class="flag-badge flag-STALE">STALE</span> Stale Pricing</strong><br>
+      <span style="color:var(--muted);">
+        Last trade price is &gt;30% away from current bid/ask midpoint.
+        Option traded at a different price before the market moved.
+        Watch for fills at stale prices.
+      </span>
+    </div>
+    <div>
+      <strong><span class="flag-badge flag-HIGH_IV">HIGH IV</span> Abnormal IV</strong><br>
+      <span style="color:var(--muted);">
+        Implied volatility exceeds 500% annualized with real volume.
+        On expiration day this can indicate extreme positioning or
+        a pricing model artifact on near-zero-time options.
+      </span>
+    </div>
+    <div>
+      <strong><span class="flag-badge flag-WIDE_SPREAD">WIDE SPREAD</span> Wide Bid-Ask</strong><br>
+      <span style="color:var(--muted);">
+        Bid-ask spread exceeds 60% of midpoint on a liquid underlying with volume.
+        Market maker may be widening quotes due to uncertainty.
+      </span>
+    </div>
+    <div>
+      <strong><span class="flag-badge flag-UNUSUAL_VOLUME">UNUSUAL VOLUME</span> Unusual Volume</strong><br>
+      <span style="color:var(--muted);">
+        High volume on a nearly-worthless strike (delta &lt; 0.05).
+        May indicate informed buying of a "lottery ticket" or unusual positioning.
+      </span>
+    </div>
+  </div>
+</div>
+
+<script>
+const scanBtn      = document.getElementById("scan-btn");
+const progressWrap = document.getElementById("progress-wrap");
+const progressBar  = document.getElementById("progress-bar");
+const progressText = document.getElementById("progress-text");
+let pollTimer = null;
+
+{% if running %}
+if (scanBtn) { scanBtn.disabled = true; scanBtn.textContent = "Scanning…"; }
+progressWrap.style.display = "block";
+pollStatus();
+{% endif %}
+
+function startScan() {
+  fetch("/zerodte/start", { method: "POST" })
+    .then(r => r.json())
+    .then(d => {
+      if (d.status === "disabled") {
+        alert("0DTE scanner is currently disabled.");
+        return;
+      }
+      if (scanBtn) { scanBtn.disabled = true; scanBtn.textContent = "Scanning…"; }
+      progressWrap.style.display = "block";
+      progressBar.style.width = "0%";
+      progressText.textContent = "Starting scan…";
+      pollStatus();
+    })
+    .catch(err => console.error("Start scan error:", err));
+}
+
+function pollStatus() {
+  if (pollTimer) clearTimeout(pollTimer);
+  fetch("/zerodte/status")
+    .then(r => r.json())
+    .then(d => {
+      if (d.running) {
+        const pct = d.total > 0 ? Math.round(d.progress / d.total * 100) : 0;
+        progressBar.style.width = pct + "%";
+        progressText.textContent = d.current
+          ? `Scanning ${d.current} (${d.progress} / ${d.total})`
+          : "Starting…";
+        pollTimer = setTimeout(pollStatus, 1500);
+      } else {
+        progressBar.style.width = "100%";
+        if (d.error) {
+          progressText.textContent = "Error: " + d.error;
+          if (scanBtn) { scanBtn.disabled = false; scanBtn.textContent = "▶ Run Scan Now"; }
+        } else {
+          progressText.textContent = "Scan complete — reloading…";
+          setTimeout(() => location.reload(), 800);
+        }
+      }
+    })
+    .catch(() => { pollTimer = setTimeout(pollStatus, 2500); });
+}
+
+/* ── Client-side table sort ─────────────────────────────────────── */
+let sortCol = 15, sortAsc = false;
+
+function sortTable(col) {
+  const tbody = document.querySelector("#main-table tbody");
+  if (!tbody) return;
+  const rows = Array.from(tbody.querySelectorAll("tr"));
+  if (sortCol === col) { sortAsc = !sortAsc; } else { sortCol = col; sortAsc = false; }
+  rows.sort((a, b) => {
+    const va = cellVal(a, col), vb = cellVal(b, col);
+    return sortAsc ? (va > vb ? 1 : -1) : (va < vb ? 1 : -1);
+  });
+  rows.forEach(r => tbody.appendChild(r));
+}
+
+function cellVal(row, col) {
+  const cell = row.cells[col];
+  if (!cell) return "";
+  const raw  = cell.textContent.replace(/[$,%,\s]/g, "").trim();
+  const n    = parseFloat(raw);
+  return isNaN(n) ? raw.toLowerCase() : n;
+}
+</script>
+{% endblock %}

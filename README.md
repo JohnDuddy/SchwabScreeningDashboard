@@ -202,3 +202,35 @@ Each stock receives a 0–100 **composite momentum score** combining:
 
 Stocks are classified **Strong / Moderate / Weak / No Clear Momentum**, requiring positive 63d return, positive vs-SPY, positive slope, t-stat > 1.0, and price above MA50 to qualify as "clear momentum".
 
+
+## Expiring Options
+
+The `Expiring Options` page scans the next expiration date for put options at 5%, 10%, and 15% below the current stock price.
+
+Open it from the navigation bar or use the desktop shortcut named `Expiring Options`.
+
+The scanner is read-only. It does not place trades, create order tickets, or automate Schwab Desktop.
+
+Universe:
+
+- `Live Schwab API` scans the same deduplicated S&P 500 + Nasdaq 100 list shown on the app's `Universe` / `All tickers in universe` page.
+- `Test CSV data` is only a small sample dataset for smoke testing calculations and exports.
+
+Modes:
+
+- `Live Schwab API`: uses the existing Schwab OAuth token and the Schwab market-data quotes/chains endpoints for the full app universe.
+- `Test CSV data`: uses `samples/expiring_symbol_universe.csv`, `samples/expiring_current_prices.csv`, and `samples/expiring_option_chains.csv`.
+
+Results are cached locally, exported to CSV/Excel, and stored in `data/expiring_options.sqlite`.
+
+Simple 90% midpoint export:
+
+- Double-click `generate_90pct_put_midpoints.bat` to create `exports/90pct_put_midpoints_*.csv` and `.xlsx`.
+- Each run also writes `_valid_only.csv` and `_valid_only.xlsx` copies containing only rows where Schwab returned bid and ask values.
+- The export uses the full app universe, the next expiration by default, selects the closest listed put strike at or below 90% of the current stock price, and calculates `midpoint_premium = (bid + ask) / 2`.
+- To specify an expiration manually, run `python export_90pct_put_midpoints.py --expiration YYYY-MM-DD`.
+
+Expiration-date behavior:
+
+- `Next expiration` scans today if today is a standard Friday expiration, otherwise the next Friday.
+- `Custom expiration` lets you scan a specific expiration date supported by Schwab market data, including holiday-adjusted expirations.

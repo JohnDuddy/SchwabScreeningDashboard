@@ -1,0 +1,244 @@
+﻿{% extends "base.html" %}
+
+{% block title %}Expiring Options - Schwab Dashboard{% endblock %}
+
+{% block extra_style %}
+.exp-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap:.8rem; margin-bottom:1rem; }
+.exp-metric { background:#fff; border:1px solid var(--border); border-radius:8px; padding:.9rem 1rem; }
+.exp-metric .value { font-size:1.45rem; font-weight:700; color:var(--schwab-blue); }
+.exp-metric .label { color:var(--muted); font-size:.76rem; margin-top:.15rem; }
+.exp-controls { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:.75rem; align-items:end; }
+.exp-controls label { display:block; font-size:.72rem; color:var(--muted); margin-bottom:.2rem; }
+.exp-controls input, .exp-controls select { width:100%; padding:.42rem .48rem; border:1px solid var(--border); border-radius:5px; background:#fff; }
+.check-row { display:flex; gap:.45rem; align-items:center; font-size:.78rem; color:var(--text); }
+.check-row input { width:auto; }
+.exp-actions { display:flex; flex-wrap:wrap; gap:.6rem; align-items:center; margin-top:1rem; }
+.notice { border-radius:8px; padding:.85rem 1rem; margin-bottom:1rem; font-size:.86rem; }
+.notice-warn { background:#fff3d6; border:1px solid #f0c36a; color:#604000; }
+.notice-info { background:#eef5ff; border:1px solid #b9d4f3; color:#173d66; }
+#progress-wrap { display:none; margin-top:1rem; }
+.progress-bar-outer { height:8px; background:#e8edf3; border-radius:4px; overflow:hidden; }
+.progress-bar-inner { height:100%; width:0%; background:var(--schwab-light); transition:width .25s; }
+.progress-text { color:var(--muted); font-size:.8rem; margin-top:.35rem; }
+.tabbar { display:flex; flex-wrap:wrap; gap:.45rem; margin-bottom:.9rem; }
+.tabbar button { border:1px solid var(--border); background:#fff; border-radius:16px; padding:.34rem .8rem; cursor:pointer; }
+.tabbar button.active { background:var(--schwab-light); color:#fff; border-color:var(--schwab-light); }
+.exp-table-wrap { overflow:auto; max-height:620px; border:1px solid var(--border); border-radius:8px; }
+table.exp-table { width:100%; border-collapse:collapse; font-size:.76rem; }
+.exp-table th { position:sticky; top:0; background:var(--schwab-blue); color:#fff; text-align:left; padding:.48rem .5rem; white-space:nowrap; cursor:pointer; }
+.exp-table td { padding:.4rem .5rem; border-bottom:1px solid var(--border); white-space:nowrap; }
+.exp-table tr:hover td { background:#f0f4f8; }
+.approx { color:var(--warn); font-weight:700; }
+.symbol-link { color:var(--schwab-light); font-weight:700; text-decoration:none; }
+.symbol-link:hover { text-decoration:underline; }
+.detail-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:.8rem; margin-bottom:1rem; }
+.small-muted { color:var(--muted); font-size:.78rem; }
+{% endblock %}
+
+{% macro money(v, digits=2) -%}
+  {%- if v is number -%}${{ ("%." ~ digits ~ "f")|format(v) }}{%- else -%}-{% endif -%}
+{%- endmacro %}
+{% macro num(v, digits=2) -%}
+  {%- if v is number -%}{{ ("%." ~ digits ~ "f")|format(v) }}{%- else -%}-{% endif -%}
+{%- endmacro %}
+{% macro pct(v, digits=3) -%}
+  {%- if v is number -%}{{ ("%." ~ digits ~ "f")|format(v) }}%{%- else -%}-{% endif -%}
+{%- endmacro %}
+
+{% macro results_table(level, rows) %}
+<div id="panel-{{ level }}" class="result-panel" {% if level != '5' %}style="display:none;"{% endif %}>
+  <div class="exp-actions" style="margin:0 0 .7rem;">
+    <strong>{{ level }}% below current stock price candidates</strong>
+    <a class="btn btn-secondary" href="/expiring-options/export/csv?level={{ level }}">CSV</a>
+    <a class="btn btn-secondary" href="/expiring-options/export/xlsx">Excel</a>
+  </div>
+  {% if rows %}
+  <div class="exp-table-wrap">
+    <table class="exp-table sortable-table">
+      <thead>
+        <tr>
+          <th>Rank</th><th>Symbol</th><th>Company</th><th>Current</th><th>Target %</th><th>Calc Strike</th><th>Selected Strike</th><th>Exp</th>
+          <th>Bid</th><th>Ask</th><th>Mid</th><th>Last</th><th>Vol</th><th>OI</th><th>IV</th><th>Delta</th><th>Theta</th><th>Gamma</th><th>Vega</th>
+          <th>Spread</th><th>Spread %</th><th>Mid Premium / Strike %</th><th>Mid Yield Underlying</th><th>Bid Yield Strike</th><th>Distance</th><th>Breakeven</th><th>BE Discount</th><th>Quote Time</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for r in rows %}
+        <tr>
+          <td>{{ r.rank }}</td>
+          <td><a class="symbol-link" href="/expiring-options?symbol={{ r.symbol }}">{{ r.symbol }}</a></td>
+          <td>{{ r.company_name }}</td>
+          <td>{{ money(r.current_stock_price) }}</td>
+          <td>{{ num(r.target_percentage, 0) }}%</td>
+          <td>{{ money(r.calculated_target_strike) }}</td>
+          <td>{{ money(r.actual_selected_strike) }}{% if r.is_approximate_strike %} <span class="approx">approx</span>{% endif %}</td>
+          <td>{{ r.expiration_date }}</td>
+          <td>{{ money(r.bid_price, 3) }}</td>
+          <td>{{ money(r.ask_price, 3) }}</td>
+          <td>{{ money(r.option_midpoint_price, 3) }}</td>
+          <td>{{ money(r.last_price, 3) }}</td>
+          <td>{{ r.volume if r.volume is not none else '-' }}</td>
+          <td>{{ r.open_interest if r.open_interest is not none else '-' }}</td>
+          <td>{{ pct(r.implied_volatility, 1) }}</td>
+          <td>{{ num(r.delta, 3) }}</td>
+          <td>{{ num(r.theta, 3) }}</td>
+          <td>{{ num(r.gamma, 3) }}</td>
+          <td>{{ num(r.vega, 3) }}</td>
+          <td>{{ money(r.bid_ask_spread, 3) }}</td>
+          <td>{{ pct(r.bid_ask_spread_percentage, 1) }}</td>
+          <td><strong>{{ pct(r.midpoint_premium_percent_of_selected_strike if r.midpoint_premium_percent_of_selected_strike is number else r.midpoint_premium_yield_on_strike, 3) }}</strong></td>
+          <td>{{ pct(r.midpoint_premium_yield_on_underlying, 3) }}</td>
+          <td>{{ pct(r.bid_premium_yield_on_strike, 3) }}</td>
+          <td>{{ pct(r.distance_below_current_stock_price, 2) }}</td>
+          <td>{{ money(r.breakeven_price, 3) }}</td>
+          <td>{{ pct(r.breakeven_discount, 2) }}</td>
+          <td>{{ r.quote_timestamp or '-' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="notice notice-info">No {{ level }}% candidates passed the current filters.</div>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{% block content %}
+<h2 style="margin-bottom:1rem;">Expiring Options</h2>
+
+<div class="notice notice-info">
+  Live mode scans the app's <strong>All tickers in universe</strong>: {{ summary.universe_count or 0 }} S&amp;P 500 + Nasdaq 100 tickers, deduplicated from the Universe page. This scanner is read-only: it does not place trades, create order tickets, or automate Schwab Desktop.
+</div>
+
+{% if summary.warnings %}
+  {% for warning in summary.warnings %}<div class="notice notice-warn">{{ warning }}</div>{% endfor %}
+{% endif %}
+{% if error %}<div class="notice notice-warn"><strong>Scan error:</strong> {{ error }}</div>{% endif %}
+
+{% if summary.total_symbols_loaded and summary.total_candidates_found == 0 and summary.missing_data_symbols == summary.total_symbols_loaded %}
+<div class="notice notice-warn">
+  The last scan found no put chains for {{ summary.scan_date }}. Confirm this is the next listed expiration for these stocks, or choose a custom expiration date.
+</div>
+{% endif %}
+
+<div class="card">
+  <form id="scan-form" method="get" action="/expiring-options">
+    <div class="exp-controls">
+      <div><label>Mode</label><select name="mode"><option value="live" {% if mode=='live' %}selected{% endif %}>Live Schwab API</option><option value="test" {% if mode=='test' %}selected{% endif %}>Test CSV data</option></select></div>
+      <div><label>Expiration date</label><select name="expiration_mode"><option value="next" {% if expiration_mode=='next' %}selected{% endif %}>Next expiration</option><option value="custom" {% if expiration_mode=='custom' %}selected{% endif %}>Custom expiration</option></select></div>
+      <div><label>Expiration date</label><input type="date" name="expiration_date" value="{{ scan_date_value }}"></div>
+      <div><label>Sort by</label><select name="sort_by">{% for key, label in sort_fields.items() %}<option value="{{ key }}" {% if sort_by==key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+      <div><label>Minimum bid</label><input name="min_bid_price" value="{{ filters.min_bid_price }}"></div>
+      <div><label>Minimum ask</label><input name="min_ask_price" value="{{ filters.min_ask_price }}"></div>
+      <div><label>Minimum midpoint</label><input name="min_midpoint_price" value="{{ filters.min_midpoint_price }}"></div>
+      <div><label>Minimum open interest</label><input name="min_open_interest" value="{{ filters.min_open_interest }}"></div>
+      <div><label>Minimum volume</label><input name="min_volume" value="{{ filters.min_volume }}"></div>
+      <div><label>Max spread %</label><input name="max_bid_ask_spread_percentage" value="{{ filters.max_bid_ask_spread_percentage }}"></div>
+      <div><label>Max abs delta</label><input name="max_absolute_delta" value="{{ filters.max_absolute_delta or '' }}"></div>
+      <div><label>Min distance %</label><input name="min_distance_below_current_stock_price" value="{{ filters.min_distance_below_current_stock_price }}"></div>
+      <div class="check-row"><input type="hidden" name="exclude_zero_bid" value="0"><input type="checkbox" name="exclude_zero_bid" value="1" {% if filters.exclude_zero_bid %}checked{% endif %}> Exclude zero bid</div>
+      <div class="check-row"><input type="hidden" name="exclude_missing_bid_ask" value="0"><input type="checkbox" name="exclude_missing_bid_ask" value="1" {% if filters.exclude_missing_bid_ask %}checked{% endif %}> Exclude missing bid/ask</div>
+      <div class="check-row"><input type="hidden" name="exclude_extremely_wide_spreads" value="0"><input type="checkbox" name="exclude_extremely_wide_spreads" value="1" {% if filters.exclude_extremely_wide_spreads %}checked{% endif %}> Exclude extreme spreads</div>
+    </div>
+    <div class="exp-actions">
+      {% if has_token or mode == 'test' %}<button type="button" id="scan-btn" class="btn btn-primary" onclick="startScan()">Run Scan</button>{% else %}<a href="/login" class="btn btn-danger">Connect Schwab to Scan</a>{% endif %}
+      <button class="btn btn-secondary" type="submit">Apply View Settings</button>
+      <a class="btn btn-secondary" href="/universe">View All Tickers Universe</a>
+      {% if summary.total_candidates_found %}<a class="btn btn-success" href="/expiring-options/export/xlsx">Export Excel</a>{% endif %}
+      {% if summary.timestamp %}<span class="small-muted">Last scan: {{ summary.timestamp }} | {{ summary.market_data_status }}</span>{% endif %}
+    </div>
+    <div id="progress-wrap"><div class="progress-bar-outer"><div class="progress-bar-inner" id="progress-bar"></div></div><div class="progress-text" id="progress-text">Starting scan...</div></div>
+  </form>
+</div>
+
+<div class="exp-grid">
+  <div class="exp-metric"><div class="value">{{ summary.total_symbols_loaded or summary.universe_count or 0 }}</div><div class="label">All Tickers Universe</div></div>
+  <div class="exp-metric"><div class="value" style="font-size:1rem;">{{ summary.universe_source or 'unknown' }}</div><div class="label">Universe Source</div></div>
+  <div class="exp-metric"><div class="value">{{ summary.total_candidates_found or 0 }}</div><div class="label">Candidates Found</div></div>
+  <div class="exp-metric"><div class="value">{{ summary.missing_data_symbols or 0 }}</div><div class="label">Missing Data</div></div>
+  <div class="exp-metric"><div class="value">{{ summary.api_errors or 0 }}</div><div class="label">API Errors</div></div>
+  <div class="exp-metric"><div class="value">{{ summary.excluded_by_filters or 0 }}</div><div class="label">Excluded By Filters</div></div>
+</div>
+
+{% if selected_symbol %}
+<div class="card">
+  <h3 style="margin-bottom:.8rem;">Symbol Detail: {{ selected_symbol }}</h3>
+  <div class="small-muted" style="margin-bottom:.8rem;">Full put chain for the selected expiration from the latest scan. Selected 5%, 10%, and 15% strikes are marked when present.</div>
+  {% if detail_rows %}
+  <div class="exp-table-wrap" style="max-height:360px;">
+    <table class="exp-table sortable-table"><thead><tr><th>Strike</th><th>Selected</th><th>Bid</th><th>Ask</th><th>Mid</th><th>Last</th><th>Volume</th><th>OI</th><th>IV</th><th>Delta</th><th>Theta</th><th>Gamma</th><th>Vega</th><th>Quote Time</th></tr></thead><tbody>
+      {% for r in detail_rows %}
+      <tr><td>{{ money(r.strike_price) }}</td><td>{% if r.selected_levels %}<strong>{{ r.selected_levels|join(', ') }}</strong>{% else %}-{% endif %}</td><td>{{ money(r.bid_price,3) }}</td><td>{{ money(r.ask_price,3) }}</td><td>{{ money(r.midpoint,3) }}</td><td>{{ money(r.last_price,3) }}</td><td>{{ r.volume or '-' }}</td><td>{{ r.open_interest or '-' }}</td><td>{{ pct(r.implied_volatility,1) }}</td><td>{{ num(r.delta,3) }}</td><td>{{ num(r.theta,3) }}</td><td>{{ num(r.gamma,3) }}</td><td>{{ num(r.vega,3) }}</td><td>{{ r.quote_timestamp or '-' }}</td></tr>
+      {% endfor %}
+    </tbody></table>
+  </div>
+  {% else %}<div class="notice notice-info">No chain rows are cached for this symbol. Run a scan first.</div>{% endif %}
+</div>
+{% endif %}
+
+{% if summary.total_candidates_found %}
+<div class="card">
+  <div class="tabbar"><button class="active" onclick="showPanel('5', this)">5% Below ({{ summary.rows_5 }})</button><button onclick="showPanel('10', this)">10% Below ({{ summary.rows_10 }})</button><button onclick="showPanel('15', this)">15% Below ({{ summary.rows_15 }})</button></div>
+  {{ results_table('5', rows_by_level.get('5', [])) }}
+  {{ results_table('10', rows_by_level.get('10', [])) }}
+  {{ results_table('15', rows_by_level.get('15', [])) }}
+</div>
+{% else %}
+<div class="card" style="text-align:center;padding:2.5rem;"><p class="small-muted" style="margin-bottom:1rem;">No scan results yet. Use test mode for a quick smoke test, or connect Schwab and run the live scan for the next expiration date.</p></div>
+{% endif %}
+
+{% if errors %}
+<div class="card">
+  <h3 style="margin-bottom:.8rem;">Error Log</h3>
+  <div class="exp-table-wrap" style="max-height:360px;"><table class="exp-table"><thead><tr><th>Symbol</th><th>Type</th><th>Message</th></tr></thead><tbody>{% for e in errors[:300] %}<tr><td>{{ e.symbol }}</td><td>{{ e.error_type }}</td><td>{{ e.error_message }}</td></tr>{% endfor %}</tbody></table></div>
+</div>
+{% endif %}
+
+<script>
+const scanBtn = document.getElementById("scan-btn");
+const progressWrap = document.getElementById("progress-wrap");
+const progressBar = document.getElementById("progress-bar");
+const progressText = document.getElementById("progress-text");
+let pollTimer = null;
+{% if running %}if (scanBtn) { scanBtn.disabled = true; scanBtn.textContent = "Scanning..."; } progressWrap.style.display = "block"; pollStatus();{% endif %}
+function queryString() { return new URLSearchParams(new FormData(document.getElementById("scan-form"))).toString(); }
+function startScan() {
+  fetch("/expiring-options/start?" + queryString(), { method: "POST" }).then(r => r.json()).then(d => {
+    if (scanBtn) { scanBtn.disabled = true; scanBtn.textContent = "Scanning..."; }
+    progressWrap.style.display = "block"; progressBar.style.width = "0%"; progressText.textContent = d.status || "Starting scan..."; pollStatus();
+  });
+}
+function pollStatus() {
+  if (pollTimer) clearTimeout(pollTimer);
+  fetch("/expiring-options/status").then(r => r.json()).then(d => {
+    if (d.running) {
+      const pct = d.total > 0 ? Math.round(d.progress / d.total * 100) : 0;
+      progressBar.style.width = pct + "%";
+      progressText.textContent = d.current ? `Scanning ${d.current} (${d.progress} / ${d.total})` : "Starting scan...";
+      pollTimer = setTimeout(pollStatus, 1500);
+    } else {
+      progressBar.style.width = "100%";
+      if (d.error) { progressText.textContent = "Error: " + d.error; if (scanBtn) { scanBtn.disabled = false; scanBtn.textContent = "Run Scan"; } }
+      else { progressText.textContent = "Scan complete - reloading..."; setTimeout(() => location.href = "/expiring-options?" + queryString(), 700); }
+    }
+  }).catch(() => { pollTimer = setTimeout(pollStatus, 2500); });
+}
+function showPanel(level, btn) {
+  document.querySelectorAll(".result-panel").forEach(p => p.style.display = "none");
+  document.getElementById("panel-" + level).style.display = "block";
+  document.querySelectorAll(".tabbar button").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+}
+document.querySelectorAll(".sortable-table th").forEach((th, index) => {
+  th.addEventListener("click", () => {
+    const table = th.closest("table"); const tbody = table.querySelector("tbody"); const rows = Array.from(tbody.querySelectorAll("tr"));
+    const asc = th.dataset.asc !== "true"; th.dataset.asc = asc;
+    rows.sort((a,b) => { const av = cell(a,index), bv = cell(b,index); return asc ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1); });
+    rows.forEach(r => tbody.appendChild(r));
+  });
+});
+function cell(row, idx) { const raw = (row.cells[idx]?.textContent || "").replace(/[$,%]/g, "").replace(/,/g, "").trim(); const n = parseFloat(raw); return isNaN(n) ? raw.toLowerCase() : n; }
+</script>
+{% endblock %}
+

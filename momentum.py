@@ -62,7 +62,12 @@ def _load_schwab_token() -> Optional[str]:
         return None
 
 
-def fetch_schwab_history(symbol: str, days: int = 120, token: str | None = None) -> Optional[pd.DataFrame]:
+def fetch_schwab_history(
+    symbol: str,
+    days: int = 120,
+    token: str | None = None,
+    session: requests.Session | None = None,
+) -> Optional[pd.DataFrame]:
     """Fetch daily OHLCV from Schwab. Returns DataFrame indexed by date or None on failure."""
     if not token:
         token = _load_schwab_token()
@@ -72,7 +77,8 @@ def fetch_schwab_history(symbol: str, days: int = 120, token: str | None = None)
     end_ms   = int(time.time() * 1000)
     start_ms = end_ms - days * 86400 * 1000
     try:
-        r = requests.get(
+        http = session or requests
+        r = http.get(
             f"{SCHWAB_MARKET_BASE}/pricehistory",
             headers={"Authorization": f"Bearer {token}"},
             params={
@@ -125,9 +131,14 @@ def fetch_yahoo_history(symbol: str, days: int = 120) -> Optional[pd.DataFrame]:
         return None
 
 
-def fetch_history(symbol: str, days: int = 120, token: str | None = None) -> Optional[pd.DataFrame]:
+def fetch_history(
+    symbol: str,
+    days: int = 120,
+    token: str | None = None,
+    session: requests.Session | None = None,
+) -> Optional[pd.DataFrame]:
     """Try Schwab first, fall back to Yahoo."""
-    df = fetch_schwab_history(symbol, days, token)
+    df = fetch_schwab_history(symbol, days, token, session=session)
     if df is not None and len(df) >= WIN_3M:
         return df
     return fetch_yahoo_history(symbol, days)
@@ -500,35 +511,36 @@ def run_screen(symbols: list[str], days: int = 120, progress_cb=None) -> pd.Data
     logger.info("Schwab token available: %s", bool(token))
 
     import universe as univ
-    spy = fetch_history("SPY", days, token)
-    if spy is None or spy.empty:
-        raise RuntimeError("Could not fetch SPY benchmark data")
+    with requests.Session() as session:
+        spy = fetch_history("SPY", days, token, session=session)
+        if spy is None or spy.empty:
+            raise RuntimeError("Could not fetch SPY benchmark data")
 
-    # Pre-fetch each unique sector ETF once rather than once-per-stock
-    sector_etf_map = {sym: univ.get_sector_etf(sym) for sym in symbols}
-    unique_etfs = {etf for etf in sector_etf_map.values() if etf and etf != "SPY"}
-    sector_df_cache: dict[str, pd.DataFrame] = {}
-    for etf in unique_etfs:
-        etf_df = fetch_history(etf, days, token)
-        if etf_df is not None:
-            sector_df_cache[etf] = etf_df
-    logger.info("Pre-fetched %d sector ETFs", len(sector_df_cache))
+        # Pre-fetch each unique sector ETF once rather than once-per-stock
+        sector_etf_map = {sym: univ.get_sector_etf(sym) for sym in symbols}
+        unique_etfs = {etf for etf in sector_etf_map.values() if etf and etf != "SPY"}
+        sector_df_cache: dict[str, pd.DataFrame] = {}
+        for etf in unique_etfs:
+            etf_df = fetch_history(etf, days, token, session=session)
+            if etf_df is not None:
+                sector_df_cache[etf] = etf_df
+        logger.info("Pre-fetched %d sector ETFs", len(sector_df_cache))
 
-    rows = []
-    total = len(symbols)
-    for i, sym in enumerate(symbols, 1):
-        if progress_cb:
-            progress_cb(i, total, sym)
-        df = fetch_history(sym, days, token)
-        if df is None or len(df) < WIN_3M:
-            continue
-        try:
-            sector_etf = sector_etf_map.get(sym)
-            sec_df = sector_df_cache.get(sector_etf) if sector_etf else None
-            row = analyze_stock(sym, df, spy, sector_etf_df=sec_df)
-            rows.append(row)
-        except Exception as e:
-            logger.warning("analyze_stock failed for %s: %s", sym, e)
+        rows = []
+        total = len(symbols)
+        for i, sym in enumerate(symbols, 1):
+            if progress_cb:
+                progress_cb(i, total, sym)
+            df = fetch_history(sym, days, token, session=session)
+            if df is None or len(df) < WIN_3M:
+                continue
+            try:
+                sector_etf = sector_etf_map.get(sym)
+                sec_df = sector_df_cache.get(sector_etf) if sector_etf else None
+                row = analyze_stock(sym, df, spy, sector_etf_df=sec_df)
+                rows.append(row)
+            except Exception as e:
+                logger.warning("analyze_stock failed for %s: %s", sym, e)
 
     if not rows:
         return pd.DataFrame()

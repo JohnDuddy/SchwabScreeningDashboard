@@ -1,0 +1,496 @@
+{% extends "base.html" %}
+{% block title %}Equity Ranking — Schwab Dashboard{% endblock %}
+
+{% block extra_style %}
+/* ── Equity Ranking ─────────────────────────────────── */
+.eq-toolbar { display:flex; gap:.7rem; align-items:center; flex-wrap:wrap; margin-bottom:1rem; }
+.eq-toolbar .spacer { flex:1; }
+
+.phase-badge { display:inline-block; padding:.2rem .7rem; border-radius:12px; font-size:.8rem; font-weight:600; text-transform:uppercase; }
+.phase-fetching  { background:#fff3cd; color:#7a5500; }
+.phase-scoring   { background:#d4edda; color:#155724; }
+.phase-done      { background:#cce5ff; color:#004085; }
+.phase-analyzing { background:#e8d5f5; color:#5a189a; }
+.phase-error     { background:#f8d7da; color:#721c24; }
+
+.progress-wrap { background:var(--border); border-radius:6px; height:8px; margin:.5rem 0; overflow:hidden; }
+.progress-fill { height:8px; background:var(--schwab-light); border-radius:6px; transition:width .4s; }
+
+/* filter bar */
+.filter-bar { display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; margin-bottom:.8rem; }
+.filter-bar input, .filter-bar select {
+  padding:.35rem .6rem; border:1px solid var(--border); border-radius:5px;
+  font-size:.82rem; background:#fff;
+}
+.filter-bar input[type=text] { width:140px; }
+.count-badge { font-size:.8rem; color:var(--muted); margin-left:.3rem; }
+
+/* main table */
+.eq-table-wrap { overflow-x:auto; max-height:60vh; overflow-y:auto; border-radius:6px; border:1px solid var(--border); }
+table.eq-table { border-collapse:collapse; width:100%; font-size:.8rem; min-width:1100px; }
+table.eq-table th {
+  background:var(--schwab-blue); color:#fff; padding:.5rem .55rem;
+  text-align:left; white-space:nowrap; position:sticky; top:0; z-index:2;
+  cursor:pointer; user-select:none;
+}
+table.eq-table th:hover { background:#004a80; }
+table.eq-table th .sort-arrow { margin-left:.3rem; opacity:.6; }
+table.eq-table td { border-bottom:1px solid #eef0f4; padding:.38rem .55rem; white-space:nowrap; vertical-align:middle; }
+table.eq-table tr:hover td { background:#f0f5ff; }
+table.eq-table tr.selected-row td { background:#e8f4e8; }
+
+.score-cell { font-weight:700; }
+.score-hi  { color:#1a7d37; }
+.score-mid { color:#b07d00; }
+.score-lo  { color:#c0392b; }
+
+.cls-badge {
+  display:inline-block; padding:.15rem .5rem; border-radius:10px; font-size:.75rem; font-weight:600;
+}
+.cls-strong-buy { background:#d4edda; color:#155724; }
+.cls-buy        { background:#cce5ff; color:#004085; }
+.cls-watchlist  { background:#fff3cd; color:#7a5500; }
+.cls-hold       { background:#e2e3e5; color:#383d41; }
+.cls-weak       { background:#fde3e3; color:#7b1818; }
+.cls-avoid      { background:#f5c6cb; color:#721c24; }
+
+/* AI panel */
+.ai-panel { margin-top:1.4rem; }
+.ai-panel-header { display:flex; gap:.7rem; align-items:center; flex-wrap:wrap; margin-bottom:.8rem; }
+
+/* AI report rendering */
+#ai-report-area h1 { font-size:1.4rem; color:var(--schwab-blue); margin:1rem 0 .4rem; }
+#ai-report-area h2 { font-size:1.1rem; color:var(--schwab-blue); margin:1.2rem 0 .3rem; border-bottom:2px solid var(--border); padding-bottom:.2rem; }
+#ai-report-area h3 { font-size:.95rem; color:var(--text); margin:1rem 0 .25rem; }
+#ai-report-area table { border-collapse:collapse; width:100%; font-size:.82rem; margin:.6rem 0; }
+#ai-report-area th { background:var(--schwab-blue); color:#fff; padding:.4rem .6rem; text-align:left; }
+#ai-report-area td { border:1px solid var(--border); padding:.35rem .6rem; }
+#ai-report-area tr:nth-child(even) td { background:#f8fafc; }
+#ai-report-area ul, #ai-report-area ol { padding-left:1.3rem; }
+#ai-report-area li { margin-bottom:.2rem; }
+#ai-report-area hr { border:none; border-top:1px solid var(--border); margin:1rem 0; }
+#ai-report-area strong { color:var(--schwab-blue); }
+
+/* AI config form */
+.ai-config { display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; }
+.ai-config select, .ai-config input { padding:.35rem .55rem; border:1px solid var(--border); border-radius:5px; font-size:.82rem; }
+
+.streaming-cursor::after { content:"▌"; animation:blink .7s step-end infinite; color:var(--schwab-light); }
+@keyframes blink { 50% { opacity:0; } }
+
+.no-api-key { border:2px solid var(--warn); border-radius:8px; padding:.8rem 1rem; background:#fffbe6; font-size:.87rem; margin-bottom:.8rem; }
+{% endblock %}
+
+{% block content %}
+<h2 style="margin-bottom:1rem;">📊 Multi-Model Equity Ranking — Full Universe</h2>
+
+<!-- ── SCAN CONTROLS ── -->
+<div class="card" style="padding:1rem 1.2rem;">
+  <div class="eq-toolbar">
+    <button id="scan-btn" class="btn btn-primary" onclick="startScan()">
+      🔍 Scan Universe (~{{ "516" }} stocks)
+    </button>
+    <span id="scan-phase-badge" class="phase-badge {% if scan.phase %}phase-{{ scan.phase }}{% endif %}"
+      style="{% if not scan.phase %}display:none{% endif %}">
+      {{ scan.phase or "" }}
+    </span>
+    <span id="scan-progress-label" style="font-size:.82rem; color:var(--muted);">
+      {% if scan.rows %}{{ scan.rows|length }} stocks ranked{% endif %}
+    </span>
+    <span class="spacer"></span>
+    {% if scan.rows %}
+    <a href="/equity/scan/export/csv" class="btn btn-secondary" style="font-size:.8rem;">⬇ Export CSV</a>
+    <span style="font-size:.78rem; color:var(--muted);">
+      Last run: {{ scan.completed.strftime('%Y-%m-%d %H:%M') if scan.completed else '' }}
+    </span>
+    {% endif %}
+  </div>
+  <div id="scan-progress-wrap" class="progress-wrap" style="{% if not scan.running %}display:none{% endif %}">
+    <div id="scan-progress-fill" class="progress-fill" style="width:0%"></div>
+  </div>
+  <div id="scan-current" style="font-size:.77rem; color:var(--muted); margin-top:.2rem;"></div>
+  <div id="scan-error" style="color:var(--danger); font-size:.85rem; margin-top:.4rem; display:none;"></div>
+</div>
+
+<!-- ── RESULTS TABLE ── -->
+<div class="card" style="padding:1rem 1.2rem; margin-top:0;">
+  <div class="filter-bar">
+    <input type="text" id="q-filter" placeholder="Search ticker / company…" oninput="renderTable()">
+    <select id="sector-filter" onchange="renderTable()">
+      <option value="">All Sectors</option>
+    </select>
+    <select id="cls-filter" onchange="renderTable()">
+      <option value="">All Classifications</option>
+      <option>Strong Buy</option><option>Buy</option><option>Watchlist</option>
+      <option>Hold</option><option>Weak</option><option>Avoid</option>
+    </select>
+    <select id="min-score-filter" onchange="renderTable()">
+      <option value="0">Min Score: Any</option>
+      <option value="7">≥ 7.0</option>
+      <option value="8">≥ 8.0</option>
+      <option value="6">≥ 6.0</option>
+    </select>
+    <span class="count-badge" id="row-count"></span>
+    <span class="spacer"></span>
+    <button class="btn btn-secondary" style="font-size:.8rem;" onclick="clearSelection()">Clear Selection</button>
+  </div>
+
+  <div class="eq-table-wrap">
+    <table class="eq-table" id="eq-table">
+      <thead>
+        <tr>
+          <th style="width:32px;"><input type="checkbox" id="select-all" onclick="toggleAll(this)"></th>
+          <th onclick="sortBy('rank')">#<span class="sort-arrow">▼</span></th>
+          <th onclick="sortBy('ticker')">Ticker</th>
+          <th onclick="sortBy('company_name')">Company</th>
+          <th onclick="sortBy('sector')">Sector</th>
+          <th onclick="sortBy('current_price')">Price</th>
+          <th onclick="sortBy('market_cap')">Mkt Cap</th>
+          <th onclick="sortBy('score_3stmt')" title="Three-Statement Score">3-Stmt</th>
+          <th onclick="sortBy('score_dcf')" title="DCF Score">DCF</th>
+          <th onclick="sortBy('score_roic')" title="ROIC Score">ROIC</th>
+          <th onclick="sortBy('score_comp')" title="Comp Score">Comp</th>
+          <th onclick="sortBy('score_scenario')" title="Scenario Score">Scen</th>
+          <th onclick="sortBy('score_qual')" title="Qualitative Score">Qual</th>
+          <th onclick="sortBy('score_total')">Score</th>
+          <th onclick="sortBy('classification')">Classification</th>
+          <th onclick="sortBy('pe_forward')">Fwd P/E</th>
+          <th onclick="sortBy('gross_margin')">GM%</th>
+          <th onclick="sortBy('revenue_growth')">RevGrow</th>
+          <th onclick="sortBy('analyst_upside')">Upside%</th>
+        </tr>
+      </thead>
+      <tbody id="eq-tbody">
+        <tr><td colspan="19" style="text-align:center; color:var(--muted); padding:2rem;">
+          Click <strong>Scan Universe</strong> to rank all stocks.
+        </td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── AI WRITE-UP PANEL ── -->
+<div class="card ai-panel">
+  <div class="ai-panel-header">
+    <strong style="color:var(--schwab-blue);">🤖 AI Deep Dive</strong>
+    <span style="font-size:.82rem; color:var(--muted);">Select up to 10 stocks from the table, then analyze.</span>
+    <span id="selected-count" style="font-size:.82rem; font-weight:600; color:var(--schwab-light);">0 selected</span>
+  </div>
+
+  {% if not has_api_key %}
+  <div class="no-api-key">
+    <strong>⚠ OPENAI_API_KEY not set.</strong>
+    Add <code>OPENAI_API_KEY=sk-...</code> to your <code>.env</code> file and restart.
+    Get a key at platform.openai.com/api-keys.
+  </div>
+  {% endif %}
+
+  <div class="ai-config" style="margin-bottom:.8rem;">
+    <select id="ai-objective">
+      <option value="long-term compounders">Long-term compounders</option>
+      <option value="undervalued value stocks">Undervalued value</option>
+      <option value="covered-call candidates">Covered-call candidates</option>
+      <option value="cash-secured put candidates">CSP candidates</option>
+      <option value="AI beneficiaries">AI beneficiaries</option>
+      <option value="dividend stocks">Dividend stocks</option>
+      <option value="aggressive growth">Aggressive growth</option>
+    </select>
+    <select id="ai-horizon">
+      <option value="1 year">1 year</option>
+      <option value="3 years" selected>3 years</option>
+      <option value="5 years">5 years</option>
+    </select>
+    <select id="ai-style">
+      <option value="quality-focused" selected>Quality-focused</option>
+      <option value="growth-focused">Growth-focused</option>
+      <option value="value-focused">Value-focused</option>
+      <option value="income-focused">Income-focused</option>
+    </select>
+    <select id="ai-benchmark">
+      <option value="S&P 500" selected>S&P 500</option>
+      <option value="Nasdaq 100">Nasdaq 100</option>
+    </select>
+    <button id="analyze-btn" class="btn btn-success"
+      onclick="startAI()"
+      {% if not has_api_key %}disabled{% endif %}>
+      Analyze Selected
+    </button>
+    {% if ai.report %}
+    <a href="/equity/analyze/export" class="btn btn-secondary" style="font-size:.8rem;">⬇ Download</a>
+    {% endif %}
+  </div>
+
+  <div id="ai-progress-wrap" style="display:none; margin-bottom:.6rem;">
+    <span id="ai-phase-badge" class="phase-badge phase-analyzing">Analyzing…</span>
+    <span id="ai-streaming" class="streaming-cursor" style="margin-left:.5rem; font-size:.85rem; color:var(--muted);"></span>
+  </div>
+  <div id="ai-error" style="color:var(--danger); font-size:.85rem; display:none; margin-bottom:.5rem;"></div>
+
+  <div id="ai-report-area">
+    {% if ai.report %}{{ ai.report | safe }}{# markdown rendered client-side on load #}{% endif %}
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+marked.setOptions({ breaks: true, gfm: true });
+
+// ── Data ─────────────────────────────────────────────────────────────────────
+let allRows = [];
+let filteredRows = [];
+let sortKey = 'rank';
+let sortDir = 1;  // 1 = asc, -1 = desc
+let selectedTickers = new Set();
+let scanPollTimer = null;
+let aiPollTimer   = null;
+
+// ── Startup ──────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  // Load cached rows from server
+  fetch('/equity/scan/results').then(r => r.json()).then(rows => {
+    if (rows.length) { allRows = rows; populateSectors(); renderTable(); }
+  }).catch(() => {});
+
+  // Render existing AI report
+  const aiArea = document.getElementById('ai-report-area');
+  const raw = aiArea.textContent.trim();
+  if (raw && raw.startsWith('#')) {
+    aiArea.innerHTML = marked.parse(raw);
+  }
+
+  {% if scan.running %}startScanPolling();{% endif %}
+  {% if ai.running %}startAIPolling();{% endif %}
+});
+
+// ── Scan ─────────────────────────────────────────────────────────────────────
+async function startScan() {
+  const btn = document.getElementById('scan-btn');
+  btn.disabled = true; btn.textContent = 'Scanning…';
+  document.getElementById('scan-progress-wrap').style.display = '';
+  document.getElementById('scan-error').style.display = 'none';
+  const r = await fetch('/equity/scan', { method: 'POST' });
+  const d = await r.json();
+  if (d.status === 'error') {
+    showScanError(d.error); btn.disabled = false; btn.textContent = '🔍 Scan Universe (~516 stocks)';
+  } else {
+    startScanPolling();
+  }
+}
+
+function startScanPolling() {
+  if (scanPollTimer) return;
+  scanPollTimer = setInterval(pollScan, 2000);
+}
+
+async function pollScan() {
+  const d = await fetch('/equity/scan/status').then(r => r.json()).catch(() => null);
+  if (!d) return;
+
+  const badge = document.getElementById('scan-phase-badge');
+  badge.textContent = { fetching:'Fetching Data', scoring:'Scoring', done:'Done', error:'Error' }[d.phase] || d.phase;
+  badge.className = 'phase-badge phase-' + (d.phase || 'fetching');
+  badge.style.display = '';
+
+  const pct = d.total > 0 ? Math.round(d.progress / d.total * 100) : (d.phase === 'scoring' ? 95 : 0);
+  document.getElementById('scan-progress-fill').style.width = pct + '%';
+  document.getElementById('scan-progress-label').textContent =
+    d.total > 0 ? `${d.progress} / ${d.total}` : '';
+  if (d.current) document.getElementById('scan-current').textContent = 'Fetching: ' + d.current;
+
+  if (!d.running) {
+    clearInterval(scanPollTimer); scanPollTimer = null;
+    document.getElementById('scan-btn').disabled = false;
+    document.getElementById('scan-btn').textContent = '🔍 Scan Universe (~516 stocks)';
+
+    if (d.error) { showScanError(d.error); return; }
+    if (d.phase === 'done') {
+      document.getElementById('scan-progress-wrap').style.display = 'none';
+      // Load results
+      const rows = await fetch('/equity/scan/results').then(r => r.json());
+      allRows = rows;
+      document.getElementById('scan-progress-label').textContent = rows.length + ' stocks ranked';
+      populateSectors();
+      renderTable();
+    }
+  }
+}
+
+function showScanError(msg) {
+  const el = document.getElementById('scan-error');
+  el.textContent = '⚠ ' + msg; el.style.display = '';
+}
+
+// ── Table rendering ───────────────────────────────────────────────────────────
+function populateSectors() {
+  const sel = document.getElementById('sector-filter');
+  const sectors = [...new Set(allRows.map(r => r.sector).filter(Boolean))].sort();
+  sel.innerHTML = '<option value="">All Sectors</option>' +
+    sectors.map(s => `<option>${s}</option>`).join('');
+}
+
+function renderTable() {
+  const q     = document.getElementById('q-filter').value.toLowerCase();
+  const sec   = document.getElementById('sector-filter').value;
+  const cls   = document.getElementById('cls-filter').value;
+  const minSc = parseFloat(document.getElementById('min-score-filter').value) || 0;
+
+  filteredRows = allRows.filter(r => {
+    if (r.error) return false;
+    if (q && !((r.ticker||'').toLowerCase().includes(q) || (r.company_name||'').toLowerCase().includes(q))) return false;
+    if (sec && r.sector !== sec) return false;
+    if (cls && r.classification !== cls) return false;
+    if (minSc && (r.score_total||0) < minSc) return false;
+    return true;
+  });
+
+  // Sort
+  filteredRows.sort((a, b) => {
+    let av = a[sortKey], bv = b[sortKey];
+    if (av == null) av = sortDir > 0 ? Infinity : -Infinity;
+    if (bv == null) bv = sortDir > 0 ? Infinity : -Infinity;
+    if (typeof av === 'string') return av.localeCompare(bv) * sortDir;
+    return (av - bv) * sortDir;
+  });
+
+  document.getElementById('row-count').textContent = filteredRows.length + ' stocks';
+
+  const tbody = document.getElementById('eq-tbody');
+  if (!filteredRows.length) {
+    tbody.innerHTML = '<tr><td colspan="19" style="text-align:center;color:var(--muted);padding:1.5rem;">No results match filters.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = filteredRows.map(r => {
+    const sc   = r.score_total || 0;
+    const scCls = sc >= 8 ? 'score-hi' : sc >= 6 ? 'score-mid' : 'score-lo';
+    const clsCss = {
+      'Strong Buy':'cls-strong-buy','Buy':'cls-buy','Watchlist':'cls-watchlist',
+      'Hold':'cls-hold','Weak':'cls-weak','Avoid':'cls-avoid'
+    }[r.classification] || '';
+    const mc   = r.market_cap ? (r.market_cap/1e9).toFixed(1)+'B' : 'N/A';
+    const price = r.current_price ? '$'+r.current_price.toFixed(2) : 'N/A';
+    const sel  = selectedTickers.has(r.ticker) ? 'selected-row' : '';
+
+    function sc1(v) { if (v==null) return 'N/A'; const s=v.toFixed(1); return `<span class="score-cell ${v>=8?'score-hi':v>=6?'score-mid':'score-lo'}">${s}</span>`; }
+    function pct(v) { return v!=null ? (v*100).toFixed(0)+'%' : 'N/A'; }
+    function num(v,d=1) { return v!=null ? v.toFixed(d) : 'N/A'; }
+    const upside = r.analyst_upside != null ? (r.analyst_upside>0?'+':'')+r.analyst_upside.toFixed(0)+'%' : 'N/A';
+    const upcls  = r.analyst_upside > 15 ? 'color:#1a7d37;font-weight:700' : r.analyst_upside < 0 ? 'color:#c0392b' : '';
+
+    return `<tr class="${sel}" onclick="toggleRow(this,'${r.ticker}')">
+      <td onclick="event.stopPropagation()"><input type="checkbox" class="row-cb" value="${r.ticker}" ${selectedTickers.has(r.ticker)?'checked':''} onclick="handleCb(this)"></td>
+      <td>${r.rank}</td>
+      <td><strong>${r.ticker}</strong></td>
+      <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.company_name||''}">${r.company_name||''}</td>
+      <td>${r.sector||'N/A'}</td>
+      <td>${price}</td>
+      <td>${mc}</td>
+      <td>${sc1(r.score_3stmt)}</td>
+      <td>${sc1(r.score_dcf)}</td>
+      <td>${sc1(r.score_roic)}</td>
+      <td>${sc1(r.score_comp)}</td>
+      <td>${sc1(r.score_scenario)}</td>
+      <td>${sc1(r.score_qual)}</td>
+      <td><span class="score-cell ${scCls}" style="font-size:.95em;">${sc.toFixed(2)}</span></td>
+      <td><span class="cls-badge ${clsCss}">${r.classification||'N/A'}</span></td>
+      <td>${num(r.pe_forward)}</td>
+      <td>${pct(r.gross_margin)}</td>
+      <td>${pct(r.revenue_growth)}</td>
+      <td style="${upcls}">${upside}</td>
+    </tr>`;
+  }).join('');
+}
+
+function sortBy(key) {
+  if (sortKey === key) { sortDir *= -1; } else { sortKey = key; sortDir = key==='rank'?1:-1; }
+  renderTable();
+}
+
+// ── Selection ─────────────────────────────────────────────────────────────────
+function toggleRow(tr, ticker) {
+  if (selectedTickers.has(ticker)) { selectedTickers.delete(ticker); }
+  else { if (selectedTickers.size >= 10) { alert('Max 10 stocks for AI analysis.'); return; } selectedTickers.add(ticker); }
+  updateSelectionUI();
+  renderTable();
+}
+
+function handleCb(cb) {
+  const t = cb.value;
+  if (cb.checked) { if (selectedTickers.size >= 10) { alert('Max 10 stocks.'); cb.checked=false; return; } selectedTickers.add(t); }
+  else { selectedTickers.delete(t); }
+  updateSelectionUI();
+}
+
+function toggleAll(cb) {
+  if (cb.checked) {
+    filteredRows.slice(0,10).forEach(r => selectedTickers.add(r.ticker));
+  } else { selectedTickers.clear(); }
+  updateSelectionUI(); renderTable();
+}
+
+function clearSelection() { selectedTickers.clear(); updateSelectionUI(); renderTable(); }
+
+function updateSelectionUI() {
+  const n = selectedTickers.size;
+  document.getElementById('selected-count').textContent = n + ' selected';
+  document.getElementById('analyze-btn').textContent = n ? `Analyze ${n} Stock${n>1?'s':''}` : 'Analyze Selected';
+}
+
+// ── AI analysis ───────────────────────────────────────────────────────────────
+async function startAI() {
+  if (!selectedTickers.size) { alert('Select at least 1 stock first.'); return; }
+  const btn = document.getElementById('analyze-btn');
+  btn.disabled = true;
+  document.getElementById('ai-progress-wrap').style.display = '';
+  document.getElementById('ai-error').style.display = 'none';
+  document.getElementById('ai-streaming').className = 'streaming-cursor';
+
+  const payload = {
+    tickers:   [...selectedTickers],
+    objective: document.getElementById('ai-objective').value,
+    horizon:   document.getElementById('ai-horizon').value,
+    style:     document.getElementById('ai-style').value,
+    benchmark: document.getElementById('ai-benchmark').value,
+  };
+
+  const r = await fetch('/equity/analyze', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  });
+  const d = await r.json();
+  if (d.status === 'error') {
+    document.getElementById('ai-error').textContent = '⚠ ' + d.error;
+    document.getElementById('ai-error').style.display = '';
+    btn.disabled = false; return;
+  }
+  startAIPolling();
+}
+
+function startAIPolling() {
+  if (aiPollTimer) return;
+  aiPollTimer = setInterval(pollAI, 2000);
+}
+
+async function pollAI() {
+  const [st, rp] = await Promise.all([
+    fetch('/equity/analyze/status').then(r=>r.json()).catch(()=>({})),
+    fetch('/equity/analyze/report').then(r=>r.json()).catch(()=>({})),
+  ]);
+
+  if (rp.report) {
+    document.getElementById('ai-report-area').innerHTML = marked.parse(rp.report);
+  }
+
+  if (!st.running) {
+    clearInterval(aiPollTimer); aiPollTimer = null;
+    document.getElementById('analyze-btn').disabled = false;
+    document.getElementById('ai-progress-wrap').style.display = 'none';
+    document.getElementById('ai-streaming').className = '';
+    if (st.error) {
+      document.getElementById('ai-error').textContent = '⚠ ' + st.error;
+      document.getElementById('ai-error').style.display = '';
+    }
+  }
+}
+</script>
+{% endblock %}

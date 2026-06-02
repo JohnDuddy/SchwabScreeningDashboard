@@ -197,9 +197,18 @@ def _altman_z(info: dict, bs: pd.DataFrame, fin: pd.DataFrame) -> Optional[float
 class YFinanceProvider(DataProvider):
     """Wraps yfinance — implements DataProvider for stock + options."""
 
+    def __init__(self) -> None:
+        self._ticker_cache: dict[str, yf.Ticker] = {}
+
+    def _ticker(self, ticker: str) -> yf.Ticker:
+        key = ticker.upper()
+        if key not in self._ticker_cache:
+            self._ticker_cache[key] = yf.Ticker(key)
+        return self._ticker_cache[key]
+
     def fetch_stock(self, ticker: str) -> Optional[StockSnapshot]:
         try:
-            tk = yf.Ticker(ticker)
+            tk = self._ticker(ticker)
             hist = tk.history(period=f"{config.PRICE_HISTORY_DAYS}d", auto_adjust=True)
             if hist is None or hist.empty or len(hist) < 30:
                 return None
@@ -353,7 +362,7 @@ class YFinanceProvider(DataProvider):
     def fetch_options(self, ticker: str, spot: float) -> List[OptionCandidate]:
         """Pull all expirations within DTE_MIN..DTE_MAX, return raw put rows."""
         try:
-            tk = yf.Ticker(ticker)
+            tk = self._ticker(ticker)
             try:
                 exps = tk.options
             except Exception:

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import time
 import logging
+import requests
 import numpy as np
 import pandas as pd
 from typing import Optional
@@ -265,30 +266,40 @@ def run_screen_v2(
     import universe as univ
 
     token = _load_schwab_token()
-    spy = fetch_history("SPY", max(days, 260), token)
-    if spy is None or spy.empty:
-        raise RuntimeError("Could not fetch SPY benchmark data")
+    with requests.Session() as session:
+        spy = fetch_history("SPY", max(days, 260), token, session=session)
+        if spy is None or spy.empty:
+            raise RuntimeError("Could not fetch SPY benchmark data")
 
-    regime = check_market_regime(spy)
+        regime = check_market_regime(spy)
 
-    rows = []
-    total = len(symbols)
-    for i, sym in enumerate(symbols, 1):
-        if progress_cb:
-            progress_cb(i, total, sym)
-        df = fetch_history(sym, days, token)
-        if df is None or len(df) < 63:
-            continue
-        try:
-            sector_etf = univ.get_sector_etf(sym)
-            sec_df = None
-            if sector_etf and sector_etf != "SPY":
-                sec_df = fetch_history(sector_etf, days, token)
-            row = analyze_stock_v2(sym, df, spy, sector_etf_df=sec_df)
-            rows.append(row)
-        except Exception as e:
-            logger.warning("analyze_stock_v2 failed for %s: %s", sym, e)
-        time.sleep(0.05)
+        # Pre-fetch sector ETFs once. Most tickers share the same small set of
+        # sector benchmarks, so fetching inside the ticker loop is expensive.
+        sector_etf_map = {sym: univ.get_sector_etf(sym) for sym in symbols}
+        unique_etfs = {etf for etf in sector_etf_map.values() if etf and etf != "SPY"}
+        sector_df_cache: dict[str, pd.DataFrame] = {}
+        for etf in unique_etfs:
+            etf_df = fetch_history(etf, days, token, session=session)
+            if etf_df is not None and not etf_df.empty:
+                sector_df_cache[etf] = etf_df
+        logger.info("Pre-fetched %d Momentum Pro sector ETFs", len(sector_df_cache))
+
+        rows = []
+        total = len(symbols)
+        for i, sym in enumerate(symbols, 1):
+            if progress_cb:
+                progress_cb(i, total, sym)
+            df = fetch_history(sym, days, token, session=session)
+            if df is None or len(df) < 63:
+                continue
+            try:
+                sector_etf = sector_etf_map.get(sym)
+                sec_df = sector_df_cache.get(sector_etf) if sector_etf else None
+                row = analyze_stock_v2(sym, df, spy, sector_etf_df=sec_df)
+                rows.append(row)
+            except Exception as e:
+                logger.warning("analyze_stock_v2 failed for %s: %s", sym, e)
+            time.sleep(0.05)
 
     if not rows:
         return pd.DataFrame(), regime

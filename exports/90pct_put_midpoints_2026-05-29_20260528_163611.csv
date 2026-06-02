@@ -1,0 +1,4 @@
+symbol,company_name,expiration_date,current_stock_price,target_percent_of_current_price,calculated_90_percent_price,selected_put_strike,bid,ask,midpoint_premium,midpoint_formula,last_price,volume,open_interest,quote_timestamp,status,message
+A,"Agilent Technologies, Inc.",2026-05-29,,90.0,,,,,,(bid + ask) / 2,,,,,no_option_chain,No put option chain returned for selected expiration.
+AAPL,AAPL,2026-05-29,312.51,90.0,281.259,280.0,0.0,0.02,0.01,(bid + ask) / 2,0.01,78.0,4657.0,2026-05-28 15:59:59,ok,
+ABBV,ABBV,2026-05-29,218.63,90.0,196.767,195.0,0.0,0.01,0.005,(bid + ask) / 2,0.01,5.0,173.0,2026-05-28 10:17:28,ok,
