@@ -77,7 +77,15 @@ pip install -r requirements.txt
 python app.py
 ```
 
-Open your browser to **http://127.0.0.1:5000**
+Open your browser to **https://127.0.0.1** and accept the local self-signed certificate warning.
+
+On Windows, the consolidated launcher is:
+
+```powershell
+scripts\launch_app.ps1
+```
+
+The existing `run.bat`, `run_dashboard.bat`, and `run_expiring_options.bat` files are thin wrappers around that shared launcher so old desktop shortcuts continue to work.
 
 ---
 

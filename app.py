@@ -28,6 +28,7 @@ import threading
 import pandas as pd
 import momentum as mom
 import momentum_v2 as momv2
+from runtime_state import make_scan_state, reset_scan_state
 
 load_dotenv()
 
@@ -874,28 +875,13 @@ def options_export_csv():
 
 # ── Cash-Secured Put screener routes ───────────────────────────────────────
 
-_dash_state = {
-    "running": False, "completed": None,
-    "results": None, "summary": None, "errors": None,
-}
+_dash_state = make_scan_state(include_progress=False, include_summary=True, extra={"errors": None})
 _dash_lock = threading.Lock()
 
-_opts_state = {
-    "running": False, "completed": None,
-    "results": None, "summary": None, "errors": None,
-}
+_opts_state = make_scan_state(include_progress=False, include_summary=True, extra={"errors": None})
 _opts_lock = threading.Lock()
 
-_csp_state = {
-    "running":   False,
-    "started":   None,
-    "completed": None,
-    "progress":  0,
-    "total":     0,
-    "current":   "",
-    "results":   None,
-    "error":     None,
-}
+_csp_state = make_scan_state()
 _csp_lock = threading.Lock()
 
 _risk_state = {
@@ -1186,11 +1172,7 @@ def csp_start():
     with _csp_lock:
         if _csp_state["running"]:
             return jsonify({"status": "already_running"})
-        _csp_state.update({
-            "running": True, "started": datetime.now(),
-            "completed": None, "progress": 0, "total": 0,
-            "current": "", "results": None, "error": None,
-        })
+        reset_scan_state(_csp_state)
     threading.Thread(target=_run_csp_background, daemon=True).start()
     return jsonify({"status": "started"})
 
@@ -1333,64 +1315,30 @@ def risk_page():
 
 # ── Momentum screener routes ───────────────────────────────────────────────
 
-_scan_state = {
-    "running":   False,
-    "started":   None,
-    "completed": None,
-    "progress":  0,
-    "total":     0,
-    "current":   "",
-    "results":   None,
-    "error":     None,
-}
+_scan_state = make_scan_state()
 _scan_lock = threading.Lock()
 
-_momv2_state = {
-    "running":   False,
-    "started":   None,
-    "completed": None,
-    "progress":  0,
-    "total":     0,
-    "current":   "",
-    "results":   None,
-    "regime":    None,
-    "error":     None,
-}
+_momv2_state = make_scan_state(extra={"regime": None})
 _momv2_lock = threading.Lock()
 
-_zerodte_state = {
-    "running":   False,
-    "started":   None,
-    "completed": None,
-    "progress":  0,
-    "total":     0,
-    "current":   "",
-    "results":   None,
-    "summary":   None,
-    "error":     None,
-    "enabled":   True,
-}
+_zerodte_state = make_scan_state(include_summary=True, extra={"enabled": True})
 _zerodte_lock = threading.Lock()
 
-_expiring_state = {
-    "running": False,
-    "started": None,
-    "completed": None,
-    "progress": 0,
-    "total": 0,
-    "current": "",
-    "rows_by_level": {"5": [], "10": [], "15": []},
-    "all_rows": [],
-    "chain_rows": [],
-    "summary": {},
-    "errors": [],
-    "error": None,
-    "filters": {},
-    "sort_by": "midpoint_premium_yield_on_strike",
-    "mode": "live",
-    "expiration_mode": "next",
-    "selected_scan_date": None,
-}
+_expiring_state = make_scan_state(
+    include_results=False,
+    extra={
+        "rows_by_level": {"5": [], "10": [], "15": []},
+        "all_rows": [],
+        "chain_rows": [],
+        "summary": {},
+        "errors": [],
+        "filters": {},
+        "sort_by": "midpoint_premium_yield_on_strike",
+        "mode": "live",
+        "expiration_mode": "next",
+        "selected_scan_date": None,
+    },
+)
 _expiring_lock = threading.Lock()
 
 
@@ -1490,11 +1438,7 @@ def momentum_start():
     with _scan_lock:
         if _scan_state["running"]:
             return jsonify({"status": "already_running"})
-        _scan_state.update({
-            "running": True, "started": datetime.now(),
-            "completed": None, "progress": 0, "total": 0,
-            "current": "", "results": None, "error": None,
-        })
+        reset_scan_state(_scan_state)
     threading.Thread(target=_run_scan_background, daemon=True).start()
     return jsonify({"status": "started"})
 
@@ -1666,11 +1610,7 @@ def momentum2_start():
     with _momv2_lock:
         if _momv2_state["running"]:
             return jsonify({"status": "already_running"})
-        _momv2_state.update({
-            "running": True, "started": datetime.now(),
-            "completed": None, "progress": 0, "total": 0,
-            "current": "", "results": None, "error": None,
-        })
+        reset_scan_state(_momv2_state, regime=None)
     threading.Thread(target=_run_momv2_background, daemon=True).start()
     return jsonify({"status": "started"})
 
@@ -1949,20 +1889,14 @@ def expiring_options_start():
     with _expiring_lock:
         if _expiring_state["running"]:
             return jsonify({"status": "already_running"})
-        _expiring_state.update({
-            "running": True,
-            "started": datetime.now(),
-            "completed": None,
-            "progress": 0,
-            "total": 0,
-            "current": "",
-            "error": None,
-            "filters": filters.to_dict(),
-            "sort_by": sort_by,
-            "mode": mode,
-            "expiration_mode": expiration_mode,
-            "selected_scan_date": scan_date.isoformat(),
-        })
+        reset_scan_state(
+            _expiring_state,
+            filters=filters.to_dict(),
+            sort_by=sort_by,
+            mode=mode,
+            expiration_mode=expiration_mode,
+            selected_scan_date=scan_date.isoformat(),
+        )
     threading.Thread(target=_run_expiring_options_background, args=(filters, sort_by, mode, scan_date), daemon=True).start()
     return jsonify({"status": "started"})
 
@@ -2094,18 +2028,15 @@ def zerodte_export_csv():
 # ── Equity Ranking routes ──────────────────────────────────────────────────
 
 # Scan state: quantitative scoring of the full universe
-_equity_scan_state = {
-    "running": False, "started": None, "completed": None,
-    "phase": None, "progress": 0, "total": 0, "current": "",
-    "rows": None, "error": None,
-}
+_equity_scan_state = make_scan_state(include_results=False, extra={"phase": None, "rows": None})
 _equity_scan_lock = threading.Lock()
 
 # AI write-up state: OpenAI analysis of selected tickers
-_equity_ai_state = {
-    "running": False, "started": None, "completed": None,
-    "report": "", "tickers": [], "error": None,
-}
+_equity_ai_state = make_scan_state(
+    include_progress=False,
+    include_results=False,
+    extra={"report": "", "tickers": []},
+)
 _equity_ai_lock = threading.Lock()
 
 
@@ -2210,12 +2141,7 @@ def equity_scan_start():
     with _equity_scan_lock:
         if _equity_scan_state["running"]:
             return jsonify({"status": "already_running"})
-        _equity_scan_state.update({
-            "running": True, "started": datetime.now(),
-            "completed": None, "phase": "fetching",
-            "progress": 0, "total": 0, "current": "",
-            "rows": None, "error": None,
-        })
+        reset_scan_state(_equity_scan_state, phase="fetching", rows=None)
     threading.Thread(target=_run_equity_scan_background, daemon=True).start()
     return jsonify({"status": "started"})
 
@@ -2278,10 +2204,7 @@ def equity_analyze():
     with _equity_ai_lock:
         if _equity_ai_state["running"]:
             return jsonify({"status": "already_running"})
-        _equity_ai_state.update({
-            "running": True, "started": datetime.now(),
-            "completed": None, "report": "", "tickers": tickers, "error": None,
-        })
+        reset_scan_state(_equity_ai_state, report="", tickers=tickers)
 
     threading.Thread(
         target=_run_equity_ai_background,
@@ -2482,8 +2405,7 @@ def _startup_scans():
             (_momv2_state, _momv2_lock, _run_momv2_background, "momentum2"),
         ]:
             with lock:
-                state.update({"running": True, "started": datetime.now(),
-                              "progress": 0, "total": 0, "current": "", "error": None})
+                reset_scan_state(state)
             logger.info("Auto-starting %s scan", name)
             target()
 

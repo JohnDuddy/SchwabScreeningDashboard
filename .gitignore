@@ -1,5 +1,7 @@
 .env
 .schwab_tokens.json
+.company_name_cache.json
+.universe_cache.json
 __pycache__/
 *.pyc
 venv/
@@ -9,4 +11,11 @@ dist/
 build/
 .cache_*.json
 data/*.sqlite
+exports/
+output/
 *.log
+cert.pem
+key.pem
+momentum_history.xlsx
+{templates,static}/
+.claude/
